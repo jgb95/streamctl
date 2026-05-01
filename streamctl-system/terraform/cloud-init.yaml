@@ -1,0 +1,6 @@
+#cloud-config
+# This runs once on first boot of the Ubuntu droplet.
+# nixos-infect replaces Ubuntu with NixOS in place and reboots.
+# After ~5 minutes, SSH back in as root and you'll be on NixOS.
+runcmd:
+  - curl https://raw.githubusercontent.com/elitak/nixos-infect/master/nixos-infect | PROVIDER=digitalocean NIX_CHANNEL=${nix_channel} bash 2>&1 | tee /tmp/infect.log

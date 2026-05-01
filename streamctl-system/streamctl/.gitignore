@@ -1,0 +1,8 @@
+/streamctl
+/cmd/cmd
+/result
+/result-*
+*.db
+*.db-shm
+*.db-wal
+.direnv/

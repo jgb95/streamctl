@@ -1,0 +1,63 @@
+{{define "streams.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display: flex; align-items: center; margin-bottom: 16px;">
+	<h2 style="margin: 0;">Scheduled streams</h2>
+	<a href="/streams/new" class="btn btn-primary" style="margin-left: auto;">+ New stream</a>
+</div>
+
+{{if .Streams}}
+<table>
+	<thead>
+		<tr>
+			<th>Name</th>
+			<th>Video</th>
+			<th>Schedule</th>
+			<th>Endpoints</th>
+			<th>Status</th>
+			<th>Next run</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{{range .Streams}}
+		<tr>
+			<td>{{.Name}}{{if not .Enabled}} <span class="muted">(disabled)</span>{{end}}</td>
+			<td><code>{{.VideoFile}}</code></td>
+			<td>
+				<div>{{.OnCalendar}}</div>
+				<div class="muted" style="font-size: 12px;">{{.ScheduleType}}</div>
+			</td>
+			<td>
+				{{range .Endpoints}}<div>{{.Name}}</div>{{else}}<span class="muted">none</span>{{end}}
+			</td>
+			<td>
+				{{if eq .Status "active"}}<span class="badge badge-active">active</span>
+				{{else if eq .Status "failed"}}<span class="badge badge-failed">failed</span>
+				{{else}}<span class="badge badge-inactive">{{.Status}}</span>{{end}}
+			</td>
+			<td><span class="muted" style="font-size: 12px;">{{.NextTrigger}}</span></td>
+			<td>
+				<div class="actions">
+					{{if eq .Status "active"}}
+					<form method="post" action="/streams/stop/{{.ID}}" style="background: none; border: none; padding: 0;">
+						<button type="submit" class="btn btn-danger">Stop</button>
+					</form>
+					{{else}}
+					<form method="post" action="/streams/start/{{.ID}}" style="background: none; border: none; padding: 0;">
+						<button type="submit" class="btn">Start now</button>
+					</form>
+					{{end}}
+					<a href="/streams/edit/{{.ID}}" class="btn">Edit</a>
+					<form method="post" action="/streams/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this stream?');">
+						<button type="submit" class="btn btn-danger">Delete</button>
+					</form>
+				</div>
+			</td>
+		</tr>
+		{{end}}
+	</tbody>
+</table>
+{{else}}
+<p class="muted">No streams scheduled yet. <a href="/streams/new">Create one</a>.</p>
+{{end}}
+{{end}}

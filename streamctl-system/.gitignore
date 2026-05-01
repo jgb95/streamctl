@@ -1,0 +1,19 @@
+# Nix build outputs
+result
+result-*
+
+# Go binaries
+/streamctl/cmd/cmd
+/streamctl/streamctl
+
+# SQLite databases (local testing)
+*.db
+*.db-shm
+*.db-wal
+
+# direnv
+.direnv/
+.envrc.local
+
+# Local development data
+/tmp/streamctl-local/

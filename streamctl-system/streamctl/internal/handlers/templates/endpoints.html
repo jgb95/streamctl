@@ -1,0 +1,65 @@
+{{define "endpoints.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<h2>Endpoints</h2>
+
+<form method="post" action="/endpoints/create" style="margin-bottom: 24px;">
+	<h3 style="margin-top: 0; font-size: 14px;">Add new endpoint</h3>
+	<div class="field">
+		<label>Name</label>
+		<input type="text" name="name" placeholder="YouTube" required>
+	</div>
+	<div class="field">
+		<label>RTMP URL (without stream key)</label>
+		<input type="text" name="rtmp_url" placeholder="rtmp://a.rtmp.youtube.com/live2" required>
+	</div>
+	<div class="field">
+		<label>Stream key</label>
+		<input type="password" name="stream_key" required>
+	</div>
+	<button type="submit" class="btn btn-primary">Add</button>
+</form>
+
+{{if .Endpoints}}
+<table>
+	<thead>
+		<tr>
+			<th>Name</th>
+			<th>RTMP URL</th>
+			<th>Status</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{{range .Endpoints}}
+		<tr>
+			<td>
+				<form method="post" action="/endpoints/update/{{.ID}}" id="ep-{{.ID}}" style="background: none; border: none; padding: 0; display: contents;">
+					<input type="text" name="name" value="{{.Name}}" form="ep-{{.ID}}" style="background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px;">
+				</form>
+			</td>
+			<td>
+				<input type="text" name="rtmp_url" value="{{.RtmpURL}}" form="ep-{{.ID}}" style="width: 100%; background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px;">
+				<input type="password" name="stream_key" placeholder="(unchanged)" form="ep-{{.ID}}" style="width: 100%; background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px; margin-top: 4px;">
+			</td>
+			<td>
+				<label class="field-inline">
+					<input type="checkbox" name="enabled" form="ep-{{.ID}}" {{if .Enabled}}checked{{end}}>
+					<span>enabled</span>
+				</label>
+			</td>
+			<td>
+				<div class="actions">
+					<button type="submit" class="btn" form="ep-{{.ID}}">Save</button>
+					<form method="post" action="/endpoints/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this endpoint? Streams using it will be updated.');">
+						<button type="submit" class="btn btn-danger">Delete</button>
+					</form>
+				</div>
+			</td>
+		</tr>
+		{{end}}
+	</tbody>
+</table>
+{{else}}
+<p class="muted">No endpoints configured yet.</p>
+{{end}}
+{{end}}

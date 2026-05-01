@@ -1,0 +1,74 @@
+{{define "stream_form.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<h2>{{.Title}}</h2>
+
+<form method="post" action="{{.FormAction}}">
+	<div class="field">
+		<label>Name</label>
+		<input type="text" name="name" value="{{if .Stream}}{{.Stream.Name}}{{end}}" required>
+	</div>
+
+	<div class="field">
+		<label>Video file</label>
+		{{if .Videos}}
+		<select name="video_file" required>
+			{{range .Videos}}
+			<option value="{{.}}" {{if and $.Stream (eq . $.Stream.VideoFile)}}selected{{end}}>{{.}}</option>
+			{{end}}
+		</select>
+		<div class="hint">scp files to the video directory on the server, then refresh this page to see them.</div>
+		{{else}}
+		<div class="muted">No videos found in the upload directory.</div>
+		{{end}}
+	</div>
+
+	<div class="field">
+		<label>Schedule type</label>
+		<select name="schedule_type">
+			<option value="once" {{if eq .DefaultSchedule "once"}}selected{{end}}>One-shot</option>
+			<option value="recurring" {{if eq .DefaultSchedule "recurring"}}selected{{end}}>Recurring</option>
+		</select>
+	</div>
+
+	<div class="field">
+		<label>OnCalendar expression</label>
+		<input type="text" name="on_calendar" value="{{if .Stream}}{{.Stream.OnCalendar}}{{end}}" placeholder="2026-05-15 14:00:00" required>
+		<div class="hint">
+			systemd OnCalendar format. Examples:
+			<br>· One-shot: <code>2026-05-15 14:00:00</code>
+			<br>· Weekly: <code>Tue *-*-* 14:00:00</code>
+			<br>· Every weekday: <code>Mon..Fri *-*-* 09:00:00</code>
+			<br>Add <code>UTC</code> at the end to use UTC instead of server time.
+		</div>
+	</div>
+
+	<div class="field">
+		<label>Endpoints</label>
+		{{if .Endpoints}}
+		<div class="checkboxes">
+			{{range .Endpoints}}
+			<label class="field-inline">
+				<input type="checkbox" name="endpoint_ids" value="{{.ID}}"
+					{{if contains $.SelectedIDs .ID}}checked{{end}}
+					{{if not .Enabled}}disabled{{end}}>
+				<span>{{.Name}} <span class="muted" style="font-size: 12px;">({{.RtmpURL}}){{if not .Enabled}} — disabled{{end}}</span></span>
+			</label>
+			{{end}}
+		</div>
+		<div class="hint">Defaults to all endpoints. Uncheck to exclude any from this stream.</div>
+		{{else}}
+		<div class="muted">No endpoints configured. <a href="/endpoints">Add one</a>.</div>
+		{{end}}
+	</div>
+
+	<div class="field field-inline">
+		<input type="checkbox" name="enabled" id="enabled" {{if or (not .Stream) .Stream.Enabled}}checked{{end}}>
+		<label for="enabled">Enabled</label>
+	</div>
+
+	<div class="actions">
+		<button type="submit" class="btn btn-primary">Save</button>
+		<a href="/" class="btn">Cancel</a>
+	</div>
+</form>
+{{end}}
