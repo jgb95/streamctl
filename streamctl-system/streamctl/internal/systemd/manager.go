@@ -27,24 +27,33 @@ func (m *Manager) timerName(streamID int64) string {
 	return fmt.Sprintf("%sstream-%d.timer", m.UnitPrefix, streamID)
 }
 
+func (m *Manager) playlistName(streamID int64) string {
+	return fmt.Sprintf("%sstream-%d.playlist", m.UnitPrefix, streamID)
+}
+
+func (m *Manager) playlistPath(streamID int64) string {
+	return filepath.Join(m.UnitDir, m.playlistName(streamID))
+}
+
 // Sync writes (or removes) the unit files for a single stream and reloads systemd.
 // If the stream is disabled or has no endpoints, units are removed.
 func (m *Manager) Sync(s *db.Stream) error {
 	svcPath := filepath.Join(m.UnitDir, m.serviceName(s.ID))
 	timerPath := filepath.Join(m.UnitDir, m.timerName(s.ID))
+	plistPath := m.playlistPath(s.ID)
 
-	// Disabled or no endpoints → remove and stop.
-	if !s.Enabled || len(enabledEndpoints(s.Endpoints)) == 0 {
-		return m.removeUnits(s.ID, svcPath, timerPath)
+	// Disabled, no endpoints, or no clips → remove and stop.
+	if !s.Enabled || len(enabledEndpoints(s.Endpoints)) == 0 || len(s.Videos) == 0 {
+		return m.removeUnits(s.ID, svcPath, timerPath, plistPath)
 	}
 
-	svcContents := m.renderService(s)
-	timerContents := m.renderTimer(s)
-
-	if err := writeFile(svcPath, svcContents); err != nil {
+	if err := writeFileMode(plistPath, m.renderPlaylist(s), 0644); err != nil {
+		return fmt.Errorf("writing playlist: %w", err)
+	}
+	if err := writeFile(svcPath, m.renderService(s)); err != nil {
 		return fmt.Errorf("writing service: %w", err)
 	}
-	if err := writeFile(timerPath, timerContents); err != nil {
+	if err := writeFile(timerPath, m.renderTimer(s)); err != nil {
 		return fmt.Errorf("writing timer: %w", err)
 	}
 
@@ -61,15 +70,17 @@ func (m *Manager) Sync(s *db.Stream) error {
 func (m *Manager) Remove(streamID int64) error {
 	svcPath := filepath.Join(m.UnitDir, m.serviceName(streamID))
 	timerPath := filepath.Join(m.UnitDir, m.timerName(streamID))
-	return m.removeUnits(streamID, svcPath, timerPath)
+	plistPath := m.playlistPath(streamID)
+	return m.removeUnits(streamID, svcPath, timerPath, plistPath)
 }
 
-func (m *Manager) removeUnits(streamID int64, svcPath, timerPath string) error {
+func (m *Manager) removeUnits(streamID int64, svcPath, timerPath, plistPath string) error {
 	// Best-effort: don't fail if units aren't there.
 	_ = systemctl("disable", "--now", m.timerName(streamID))
 	_ = systemctl("stop", m.serviceName(streamID))
 	_ = os.Remove(svcPath)
 	_ = os.Remove(timerPath)
+	_ = os.Remove(plistPath)
 	return systemctl("daemon-reload")
 }
 
@@ -105,11 +116,11 @@ func (m *Manager) Stop(streamID int64) error {
 // ---------- Unit rendering ----------
 
 func (m *Manager) renderService(s *db.Stream) string {
-	videoPath := filepath.Join(m.VideoDir, s.VideoFile)
 	teeArg := buildTeeArg(s.Endpoints)
 
-	// We escape any % in the OnCalendar/etc by passing args directly via ExecStart.
 	// Stream keys are embedded in the unit file — file mode 0600 protects them.
+	// The playlist is read by the concat demuxer; -safe 0 is required because
+	// list entries are absolute paths.
 	return fmt.Sprintf(`[Unit]
 Description=streamctl: %s
 After=network-online.target
@@ -118,7 +129,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%s
-ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -re -i %s -c copy -f tee -map 0:v -map 0:a %s
+ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i %s -c copy -f tee -map 0:v -map 0:a %s
 Restart=no
 TimeoutStopSec=30
 StandardOutput=journal
@@ -134,10 +145,21 @@ ReadOnlyPaths=%s
 `,
 		shellEscape(s.Name),
 		m.RunUser,
-		shellQuote(videoPath),
+		shellQuote(m.playlistPath(s.ID)),
 		shellQuote(teeArg),
 		m.VideoDir,
 	)
+}
+
+func (m *Manager) renderPlaylist(s *db.Stream) string {
+	var b strings.Builder
+	for _, v := range s.Videos {
+		full := filepath.Join(m.VideoDir, v)
+		b.WriteString("file ")
+		b.WriteString(shellQuote(full))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func (m *Manager) renderTimer(s *db.Stream) string {
@@ -198,6 +220,10 @@ func systemctl(args ...string) error {
 
 func writeFile(path, contents string) error {
 	return os.WriteFile(path, []byte(contents), 0600)
+}
+
+func writeFileMode(path, contents string, mode os.FileMode) error {
+	return os.WriteFile(path, []byte(contents), mode)
 }
 
 // shellQuote wraps a value in single quotes for safe inclusion in an ExecStart line.

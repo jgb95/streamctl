@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"streamctl/internal/db"
+	"streamctl/internal/probe"
 	"streamctl/internal/systemd"
 )
 
@@ -169,12 +170,12 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s, ids, err := h.streamFromForm(r)
+	s, ids, videos, err := h.streamFromForm(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	id, err := h.DB.CreateStream(s, ids)
+	id, err := h.DB.CreateStream(s, ids, videos)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -237,13 +238,13 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s, ids, err := h.streamFromForm(r)
+	s, ids, videos, err := h.streamFromForm(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	s.ID = id
-	if err := h.DB.UpdateStream(s, ids); err != nil {
+	if err := h.DB.UpdateStream(s, ids, videos); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -302,44 +303,55 @@ func (h *Handler) streamStop(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, error) {
+func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string, error) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
-		return nil, nil, fmt.Errorf("name required")
+		return nil, nil, nil, fmt.Errorf("name required")
 	}
-	video := strings.TrimSpace(r.FormValue("video_file"))
-	if video == "" {
-		return nil, nil, fmt.Errorf("video_file required")
+
+	var videos []string
+	for _, v := range r.Form["video_file"] {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if strings.Contains(v, "/") || strings.Contains(v, "..") {
+			return nil, nil, nil, fmt.Errorf("video_file must be a bare filename: %q", v)
+		}
+		videos = append(videos, v)
 	}
-	if strings.Contains(video, "/") || strings.Contains(video, "..") {
-		return nil, nil, fmt.Errorf("video_file must be a bare filename")
+	if len(videos) == 0 {
+		return nil, nil, nil, fmt.Errorf("at least one video clip required")
 	}
+	if err := probe.ValidatePlaylist(h.VideoDir, videos); err != nil {
+		return nil, nil, nil, err
+	}
+
 	scheduleType := r.FormValue("schedule_type")
 	if scheduleType != "once" && scheduleType != "recurring" {
-		return nil, nil, fmt.Errorf("schedule_type must be 'once' or 'recurring'")
+		return nil, nil, nil, fmt.Errorf("schedule_type must be 'once' or 'recurring'")
 	}
 	onCalendar := strings.TrimSpace(r.FormValue("on_calendar"))
 	if onCalendar == "" {
-		return nil, nil, fmt.Errorf("on_calendar required")
+		return nil, nil, nil, fmt.Errorf("on_calendar required")
 	}
 
 	var ids []int64
 	for _, v := range r.Form["endpoint_ids"] {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return nil, nil, fmt.Errorf("bad endpoint id: %s", v)
+			return nil, nil, nil, fmt.Errorf("bad endpoint id: %s", v)
 		}
 		ids = append(ids, id)
 	}
 
 	s := &db.Stream{
 		Name:         name,
-		VideoFile:    video,
 		ScheduleType: scheduleType,
 		OnCalendar:   onCalendar,
 		Enabled:      r.FormValue("enabled") == "on",
 	}
-	return s, ids, nil
+	return s, ids, videos, nil
 }
 
 // ---------- endpoints ----------

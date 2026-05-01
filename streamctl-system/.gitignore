@@ -17,3 +17,4 @@ result-*
 
 # Local development data
 /tmp/streamctl-local/
+.envrc

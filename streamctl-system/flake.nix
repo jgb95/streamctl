@@ -161,6 +161,7 @@
             doctl
             gnumake
             openssl
+            nixos-rebuild
           ];
         };
       }

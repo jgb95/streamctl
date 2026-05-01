@@ -9,14 +9,49 @@
 	</div>
 
 	<div class="field">
-		<label>Video file</label>
+		<label>Playlist clips</label>
 		{{if .Videos}}
-		<select name="video_file" required>
-			{{range .Videos}}
-			<option value="{{.}}" {{if and $.Stream (eq . $.Stream.VideoFile)}}selected{{end}}>{{.}}</option>
+		<ol id="clips" class="clip-list">
+			{{if and .Stream .Stream.Videos}}
+				{{range $i, $v := .Stream.Videos}}
+				<li class="clip-row">
+					<select name="video_file" required>
+						{{range $.Videos}}
+						<option value="{{.}}" {{if eq . $v}}selected{{end}}>{{.}}</option>
+						{{end}}
+					</select>
+					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
+					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
+					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
+				</li>
+				{{end}}
+			{{else}}
+				<li class="clip-row">
+					<select name="video_file" required>
+						{{range .Videos}}<option value="{{.}}">{{.}}</option>{{end}}
+					</select>
+					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
+					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
+					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
+				</li>
 			{{end}}
-		</select>
-		<div class="hint">scp files to the video directory on the server, then refresh this page to see them.</div>
+		</ol>
+		<template id="clip-template">
+			<li class="clip-row">
+				<select name="video_file" required>
+					{{range .Videos}}<option value="{{.}}">{{.}}</option>{{end}}
+				</select>
+				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
+				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
+				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
+			</li>
+		</template>
+		<button type="button" class="btn" onclick="addClip()">+ Add clip</button>
+		<div class="hint">
+			Clips play back-to-back as a single uninterrupted stream.
+			All clips must share codec, resolution, frame rate, pixel format, and audio params — verified with ffprobe on save.
+			scp files to the video directory on the server, then refresh this page to see them.
+		</div>
 		{{else}}
 		<div class="muted">No videos found in the upload directory.</div>
 		{{end}}
@@ -71,4 +106,24 @@
 		<a href="/" class="btn">Cancel</a>
 	</div>
 </form>
+
+<script>
+function addClip() {
+	const tpl = document.getElementById('clip-template');
+	const list = document.getElementById('clips');
+	if (!tpl || !list) return;
+	list.appendChild(tpl.content.cloneNode(true));
+}
+function removeClip(btn) {
+	const list = document.getElementById('clips');
+	if (!list || list.children.length <= 1) return;
+	btn.closest('li').remove();
+}
+function moveClip(btn, dir) {
+	const li = btn.closest('li');
+	const sib = dir < 0 ? li.previousElementSibling : li.nextElementSibling;
+	if (!sib) return;
+	li.parentNode.insertBefore(dir < 0 ? li : sib, dir < 0 ? sib : li);
+}
+</script>
 {{end}}

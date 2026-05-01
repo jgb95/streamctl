@@ -10,7 +10,7 @@
 	<thead>
 		<tr>
 			<th>Name</th>
-			<th>Video</th>
+			<th>Playlist</th>
 			<th>Schedule</th>
 			<th>Endpoints</th>
 			<th>Status</th>
@@ -22,7 +22,16 @@
 		{{range .Streams}}
 		<tr>
 			<td>{{.Name}}{{if not .Enabled}} <span class="muted">(disabled)</span>{{end}}</td>
-			<td><code>{{.VideoFile}}</code></td>
+			<td>
+				{{if eq (len .Videos) 1}}
+				<code>{{index .Videos 0}}</code>
+				{{else}}
+				<div class="muted" style="font-size: 12px;">{{len .Videos}} clips</div>
+				<ol style="margin: 4px 0 0 16px; padding: 0;">
+					{{range .Videos}}<li><code>{{.}}</code></li>{{end}}
+				</ol>
+				{{end}}
+			</td>
 			<td>
 				<div>{{.OnCalendar}}</div>
 				<div class="muted" style="font-size: 12px;">{{.ScheduleType}}</div>

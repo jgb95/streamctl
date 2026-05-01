@@ -6,10 +6,8 @@
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-# Pull the DO API token from doctl and export it for Terraform.
-# `doctl auth token` prints the token for the current auth context.
-# If you have multiple contexts, switch with `doctl auth switch`.
-export DIGITALOCEAN_TOKEN := $(shell doctl auth token 2>/dev/null)
+DIGITALOCEAN_TOKEN ?=
+export DIGITALOCEAN_TOKEN
 
 # Cache the droplet's IP across recipes that need it.
 # This shells out to terraform once per make invocation, not per recipe.
@@ -104,7 +102,8 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
 	nixos-rebuild switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP) \
-	  --build-host root@$(IP)
+	  --build-host root@$(IP) \
+          --fast
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
 	nixos-rebuild switch \

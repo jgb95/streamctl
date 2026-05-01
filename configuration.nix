@@ -22,7 +22,7 @@
   # ---------- system basics ----------
 
   networking.hostName = "streamctl";
-  time.timeZone = "America/Los_Angeles"; # change as desired
+  time.timeZone = "America/Chicago"; # change as desired
 
   # Required for systemd timers using OnCalendar in local time.
   # If you'd rather use UTC everywhere, set time.timeZone = "UTC".
@@ -62,7 +62,7 @@
     recommendedProxySettings = true;
     recommendedTlsSettings = true;
 
-    virtualHosts."stream.example.com" = {
+    virtualHosts."stream.btcpp.dev" = {
       enableACME = true;
       forceSSL = true;
       locations."/" = {
@@ -80,7 +80,7 @@
 
   security.acme = {
     acceptTerms = true;
-    defaults.email = "you@example.com"; # change me
+    defaults.email = "hello@btcpp.dev";
   };
 
   networking.firewall.allowedTCPPorts = [ 22 80 443 ];
