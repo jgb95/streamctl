@@ -16,7 +16,7 @@ IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
 .PHONY: help init plan create ip wait-for-nixos pull-hardware-config \
         bootstrap-secret deploy deploy-local-build deploy-dry update \
         build shell run-local \
-        ssh logs timers destroy check-token check-ip stream-logs upload install-rclone-config
+        ssh logs timers destroy check-token check-ip stream-logs upload install-rclone-config maybe-install-rclone-config
 
 # ---------- help ----------
 
@@ -111,11 +111,13 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP) \
           --fast
+	@$(MAKE) maybe-install-rclone-config
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
 	nixos-rebuild switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP)
+	@$(MAKE) maybe-install-rclone-config
 
 deploy-dry: check-ip ## Test the config without switching (validation only).
 	nixos-rebuild dry-activate \
@@ -185,6 +187,13 @@ install-rclone-config: check-ip ## Install local rclone.conf on the droplet for 
 	  install -m 0400 -o streamctl -g streamctl /tmp/streamctl-rclone.conf /var/lib/streamctl/rclone.conf && \
 	  rm -f /tmp/streamctl-rclone.conf'
 	@echo "Installed rclone.conf at /var/lib/streamctl/rclone.conf."
+
+maybe-install-rclone-config: check-ip ## Install local rclone.conf when present; skip otherwise.
+	@if [ -f rclone.conf ]; then \
+	  $(MAKE) install-rclone-config; \
+	else \
+	  echo "No local rclone.conf found; skipping rclone config install."; \
+	fi
 
 # ---------- teardown ----------
 
