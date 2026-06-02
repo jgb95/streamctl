@@ -43,13 +43,26 @@
     # "ssh-ed25519 AAAA... your-laptop-key"
   ];
 
+  # Allow `make upload` to scp directly to the streamctl user's video dir.
+  # NixOS writes these keys to /etc/ssh/authorized_keys.d/streamctl, so no
+  # home directory is needed for SSH key auth.
+  users.users.streamctl.openssh.authorizedKeys.keys = [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDY8YVy1Y6QezGvJaKU3RKz+dSUFS2ieYW+1r5HFr6oL niftynei@gmail.com"
+  ];
+
   # ---------- streamctl ----------
 
   services.streamctl = {
     enable = true;
     listen = "127.0.0.1:8080";
     secretFile = "/var/lib/streamctl/secret";
+    # Configure these once rclone has a Spaces remote.
+    remote = "spaces:btcpp";
+    rcloneConfigFile = "/var/lib/streamctl/rclone.conf";
+    notificationEmail = "hello@btcpp.dev";
+    cleanupCache = true;
     # videoDir defaults to /var/lib/streamctl/videos — that's where you scp event files.
+    # cacheDir defaults to /var/lib/streamctl/cache — remote clips are prefetched there.
   };
 
   # ---------- reverse proxy + TLS ----------
@@ -62,7 +75,7 @@
     recommendedProxySettings = true;
     recommendedTlsSettings = true;
 
-    virtualHosts."stream.example.com" = {
+    virtualHosts."stream.btcpp.dev" = {
       enableACME = true;
       forceSSL = true;
       locations."/" = {
@@ -80,7 +93,7 @@
 
   security.acme = {
     acceptTerms = true;
-    defaults.email = "you@example.com"; # change me
+    defaults.email = "hello@btcpp.dev";
   };
 
   networking.firewall.allowedTCPPorts = [ 22 80 443 ];
@@ -91,6 +104,8 @@
     htop
     tmux
     ffmpeg # so you can manually test pushes from the shell
+    rclone # for DO Spaces prefetch
+    msmtp # sendmail-compatible client for prefetch status email
     sqlite # for poking at the streamctl db
   ];
 

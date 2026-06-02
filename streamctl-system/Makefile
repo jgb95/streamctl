@@ -6,7 +6,7 @@
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-DIGITALOCEAN_TOKEN ?=
+DIGITALOCEAN_TOKEN := $(strip $(DIGITAL_OCEAN_TOKEN))
 export DIGITALOCEAN_TOKEN
 
 # Cache the droplet's IP across recipes that need it.
@@ -16,7 +16,7 @@ IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
 .PHONY: help init plan create ip wait-for-nixos pull-hardware-config \
         bootstrap-secret deploy deploy-local-build deploy-dry update \
         build shell run-local \
-        ssh logs timers destroy check-token check-ip stream-logs upload
+        ssh logs timers destroy check-token check-ip stream-logs upload install-rclone-config
 
 # ---------- help ----------
 
@@ -26,7 +26,7 @@ help: ## Show this help.
 
 # Internal sanity check: bail if doctl didn't return a token.
 check-token:
-	@if [ -z "$(DIGITALOCEAN_TOKEN)" ]; then \
+	@if [ -z "$${DIGITALOCEAN_TOKEN:-}" ]; then \
 	  echo "ERROR: doctl auth token returned nothing." >&2; \
 	  echo "Run 'doctl auth init' first." >&2; \
 	  exit 1; \
@@ -167,6 +167,17 @@ upload: check-ip ## Upload a video file via scp (FILE=path).
 	fi
 	scp "$(FILE)" "streamctl@$(IP):/var/lib/streamctl/videos/"
 	@echo "Uploaded $(FILE). It should appear in the UI immediately."
+
+install-rclone-config: check-ip ## Install local rclone.conf on the droplet for Spaces prefetch.
+	@if [ ! -f rclone.conf ]; then \
+	  echo "ERROR: ./rclone.conf not found." >&2; \
+	  exit 1; \
+	fi
+	scp rclone.conf root@$(IP):/tmp/streamctl-rclone.conf
+	ssh root@$(IP) 'install -d -m 0750 -o streamctl -g streamctl /var/lib/streamctl && \
+	  install -m 0400 -o streamctl -g streamctl /tmp/streamctl-rclone.conf /var/lib/streamctl/rclone.conf && \
+	  rm -f /tmp/streamctl-rclone.conf'
+	@echo "Installed rclone.conf at /var/lib/streamctl/rclone.conf."
 
 # ---------- teardown ----------
 

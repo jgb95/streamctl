@@ -45,6 +45,18 @@ variable "nix_channel" {
   description = "NixOS channel for the initial nixos-infect bootstrap."
 }
 
+variable "dns_domain" {
+  type        = string
+  default     = "btcpp.dev"
+  description = "DigitalOcean-managed DNS zone for streamctl."
+}
+
+variable "dns_subdomain" {
+  type        = string
+  default     = "stream"
+  description = "Subdomain record name to point at the streamctl droplet."
+}
+
 # ---------- ssh key ----------
 
 resource "digitalocean_ssh_key" "deploy" {
@@ -124,6 +136,16 @@ resource "digitalocean_firewall" "streamctl" {
   }
 }
 
+# ---------- DNS ----------
+
+resource "digitalocean_record" "streamctl" {
+  domain = var.dns_domain
+  type   = "A"
+  name   = var.dns_subdomain
+  value  = digitalocean_droplet.streamctl.ipv4_address
+  ttl    = 300
+}
+
 # ---------- outputs ----------
 
 output "ipv4" {
@@ -139,6 +161,11 @@ output "ipv6" {
 output "ssh_command" {
   value       = "ssh root@${digitalocean_droplet.streamctl.ipv4_address}"
   description = "SSH into the droplet (after nixos-infect completes, ~5 min after creation)."
+}
+
+output "stream_url" {
+  value       = "https://${var.dns_subdomain}.${var.dns_domain}"
+  description = "streamctl web UI URL."
 }
 
 output "deploy_command" {
