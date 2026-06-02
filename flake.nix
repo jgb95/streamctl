@@ -16,7 +16,7 @@
         # First build will fail with a hash mismatch; copy the suggested hash
         # from the error into here. Once go.sum is committed, this becomes
         # a pinned dependency hash.
-        vendorHash = null;
+        vendorHash = "sha256-7hRezOBcjB2wsx/SwV519wg3Azh+0kHMcAoc9aYPM3A=";
         subPackages = [ "cmd" ];
         meta = with pkgs.lib; {
           description = "Schedule pre-recorded RTMP streams via systemd";
