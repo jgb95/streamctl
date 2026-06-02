@@ -81,6 +81,13 @@ pull-hardware-config: check-ip ## Copy hardware-configuration.nix from droplet i
 	  root@$(IP):/etc/nixos/hardware-configuration.nix \
 	  nixos/hardware-configuration.nix
 	@echo "Pulled hardware-configuration.nix from $(IP)."
+	@if scp -o StrictHostKeyChecking=no \
+	  root@$(IP):/etc/nixos/networking.nix \
+	  nixos/networking.nix; then \
+	  echo "Pulled networking.nix from $(IP)."; \
+	else \
+	  echo "No /etc/nixos/networking.nix found on $(IP); keeping existing nixos/networking.nix."; \
+	fi
 
 bootstrap-secret: check-ip ## Generate a streamctl login secret on the droplet.
 	@SECRET=$$(openssl rand -base64 32 | tr -d '/+=' | head -c 32); \
