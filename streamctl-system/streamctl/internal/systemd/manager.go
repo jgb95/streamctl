@@ -41,8 +41,32 @@ func (m *Manager) playlistName(streamID int64) string {
 	return fmt.Sprintf("%sstream-%d.playlist", m.UnitPrefix, streamID)
 }
 
+func (m *Manager) prefetchScriptName(streamID int64) string {
+	return fmt.Sprintf("%sprefetch-%d.sh", m.UnitPrefix, streamID)
+}
+
+func (m *Manager) probeScriptName(streamID int64) string {
+	return fmt.Sprintf("%sstream-%d-probe.sh", m.UnitPrefix, streamID)
+}
+
+func (m *Manager) cleanupScriptName(streamID int64) string {
+	return fmt.Sprintf("%sstream-%d-cleanup.sh", m.UnitPrefix, streamID)
+}
+
 func (m *Manager) playlistPath(streamID int64) string {
 	return filepath.Join(m.UnitDir, m.playlistName(streamID))
+}
+
+func (m *Manager) prefetchScriptPath(streamID int64) string {
+	return filepath.Join(m.UnitDir, m.prefetchScriptName(streamID))
+}
+
+func (m *Manager) probeScriptPath(streamID int64) string {
+	return filepath.Join(m.UnitDir, m.probeScriptName(streamID))
+}
+
+func (m *Manager) cleanupScriptPath(streamID int64) string {
+	return filepath.Join(m.UnitDir, m.cleanupScriptName(streamID))
 }
 
 // Sync writes (or removes) the unit files for a single stream and reloads systemd.
@@ -52,10 +76,13 @@ func (m *Manager) Sync(s *db.Stream) error {
 	prefetchPath := filepath.Join(m.UnitDir, m.prefetchName(s.ID))
 	timerPath := filepath.Join(m.UnitDir, m.timerName(s.ID))
 	plistPath := m.playlistPath(s.ID)
+	prefetchScriptPath := m.prefetchScriptPath(s.ID)
+	probeScriptPath := m.probeScriptPath(s.ID)
+	cleanupScriptPath := m.cleanupScriptPath(s.ID)
 
 	// Disabled, no endpoints, or no clips → remove and stop.
 	if !s.Enabled || len(enabledEndpoints(s.Endpoints)) == 0 || len(s.Videos) == 0 {
-		return m.removeUnits(s.ID, svcPath, prefetchPath, timerPath, plistPath)
+		return m.removeUnits(s.ID, svcPath, prefetchPath, timerPath, plistPath, prefetchScriptPath, probeScriptPath, cleanupScriptPath)
 	}
 
 	if m.needsPrefetch(s) && strings.TrimSpace(m.Remote) == "" {
@@ -65,15 +92,29 @@ func (m *Manager) Sync(s *db.Stream) error {
 	if err := writeFileMode(plistPath, m.renderPlaylist(s), 0644); err != nil {
 		return fmt.Errorf("writing playlist: %w", err)
 	}
+	if err := writeFileMode(probeScriptPath, m.renderProbeScript(s), 0755); err != nil {
+		return fmt.Errorf("writing probe script: %w", err)
+	}
 	if err := writeFile(svcPath, m.renderService(s)); err != nil {
 		return fmt.Errorf("writing service: %w", err)
 	}
 	if m.needsPrefetch(s) {
+		if err := writeFileMode(prefetchScriptPath, m.renderPrefetchScript(s), 0755); err != nil {
+			return fmt.Errorf("writing prefetch script: %w", err)
+		}
 		if err := writeFile(prefetchPath, m.renderPrefetchService(s)); err != nil {
 			return fmt.Errorf("writing prefetch service: %w", err)
 		}
 	} else {
 		_ = os.Remove(prefetchPath)
+		_ = os.Remove(prefetchScriptPath)
+	}
+	if m.CleanupCache && m.needsPrefetch(s) {
+		if err := writeFileMode(cleanupScriptPath, m.renderCleanupScript(s), 0755); err != nil {
+			return fmt.Errorf("writing cleanup script: %w", err)
+		}
+	} else {
+		_ = os.Remove(cleanupScriptPath)
 	}
 	if err := writeFile(timerPath, m.renderTimer(s)); err != nil {
 		return fmt.Errorf("writing timer: %w", err)
@@ -99,18 +140,26 @@ func (m *Manager) Remove(streamID int64) error {
 	prefetchPath := filepath.Join(m.UnitDir, m.prefetchName(streamID))
 	timerPath := filepath.Join(m.UnitDir, m.timerName(streamID))
 	plistPath := m.playlistPath(streamID)
-	return m.removeUnits(streamID, svcPath, prefetchPath, timerPath, plistPath)
+	return m.removeUnits(
+		streamID,
+		svcPath,
+		prefetchPath,
+		timerPath,
+		plistPath,
+		m.prefetchScriptPath(streamID),
+		m.probeScriptPath(streamID),
+		m.cleanupScriptPath(streamID),
+	)
 }
 
-func (m *Manager) removeUnits(streamID int64, svcPath, prefetchPath, timerPath, plistPath string) error {
+func (m *Manager) removeUnits(streamID int64, paths ...string) error {
 	// Best-effort: don't fail if units aren't there.
 	_ = systemctl("disable", "--now", m.timerName(streamID))
 	_ = systemctl("stop", m.prefetchName(streamID))
 	_ = systemctl("stop", m.serviceName(streamID))
-	_ = os.Remove(svcPath)
-	_ = os.Remove(prefetchPath)
-	_ = os.Remove(timerPath)
-	_ = os.Remove(plistPath)
+	for _, path := range paths {
+		_ = os.Remove(path)
+	}
 	return systemctl("daemon-reload")
 }
 
@@ -174,7 +223,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%s
-ExecStartPre=/bin/sh -ceu %s
+ExecStartPre=%s
 ExecStart=/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i %s -c copy -f tee -map 0:v -map 0:a %s
 %s
 Restart=no
@@ -189,12 +238,12 @@ ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
 ReadOnlyPaths=%s
-ReadOnlyPaths=%s
+ReadWritePaths=%s
 `,
 		shellEscape(s.Name),
 		afterPrefetch,
 		m.RunUser,
-		shellQuote(m.renderProbeScript(s)),
+		systemdQuote(m.probeScriptPath(s.ID)),
 		shellQuote(m.playlistPath(s.ID)),
 		shellQuote(teeArg),
 		m.renderCleanupExec(s),
@@ -217,7 +266,7 @@ Wants=network-online.target
 Type=oneshot
 User=%s
 %s
-ExecStart=/run/current-system/sw/bin/bash -ceu %s
+ExecStart=%s
 TimeoutStartSec=1h
 StandardOutput=journal
 StandardError=journal
@@ -225,7 +274,7 @@ StandardError=journal
 		shellEscape(s.Name),
 		m.RunUser,
 		env,
-		shellQuote(m.renderPrefetchScript(s)),
+		systemdQuote(m.prefetchScriptPath(s.ID)),
 	)
 }
 
@@ -276,6 +325,8 @@ func normalizeOnCalendar(onCalendar string) string {
 
 func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 	var b strings.Builder
+	b.WriteString("#!/run/current-system/sw/bin/bash\n")
+	b.WriteString("set -euo pipefail\n")
 	if strings.TrimSpace(m.NotifyEmail) != "" {
 		b.WriteString(m.renderNotifyFunction(s))
 		b.WriteString("trap 'rc=$?; notify failure; exit $rc' ERR\n")
@@ -334,6 +385,8 @@ func (m *Manager) renderNotifyFunction(s *db.Stream) string {
 
 func (m *Manager) renderProbeScript(s *db.Stream) string {
 	var b strings.Builder
+	b.WriteString("#!/run/current-system/sw/bin/bash\n")
+	b.WriteString("set -euo pipefail\n")
 	for _, v := range s.Videos {
 		local := m.localClipPath(v)
 		b.WriteString("/run/current-system/sw/bin/ffprobe -v error -show_streams ")
@@ -347,11 +400,13 @@ func (m *Manager) renderCleanupExec(s *db.Stream) string {
 	if !m.CleanupCache || !m.needsPrefetch(s) {
 		return ""
 	}
-	return "ExecStartPost=/bin/sh -ceu " + shellQuote(m.renderCleanupScript(s))
+	return "ExecStartPost=" + systemdQuote(m.cleanupScriptPath(s.ID))
 }
 
 func (m *Manager) renderCleanupScript(s *db.Stream) string {
 	var b strings.Builder
+	b.WriteString("#!/run/current-system/sw/bin/bash\n")
+	b.WriteString("set -euo pipefail\n")
 	for _, v := range s.Videos {
 		if !isRemoteClip(v) {
 			continue
