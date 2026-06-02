@@ -7,6 +7,7 @@
     # infected. SSH in once and copy /etc/nixos/hardware-configuration.nix
     # back to this directory.
     ./hardware-configuration.nix
+    ./networking.nix
   ];
 
   # ---------- bootloader / DigitalOcean essentials ----------
@@ -40,7 +41,7 @@
   # The SSH key Terraform installed on first boot lives in /root/.ssh/authorized_keys.
   # If you want to add more keys declaratively:
   users.users.root.openssh.authorizedKeys.keys = [
-    # "ssh-ed25519 AAAA... your-laptop-key"
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDY8YVy1Y6QezGvJaKU3RKz+dSUFS2ieYW+1r5HFr6oL niftynei@gmail.com"
   ];
 
   # Allow `make upload` to scp directly to the streamctl user's video dir.
