@@ -13,10 +13,7 @@
         pname = "streamctl";
         version = "0.1.0";
         src = ./streamctl;
-        # First build will fail with a hash mismatch; copy the suggested hash
-        # from the error into here. Once go.sum is committed, this becomes
-        # a pinned dependency hash.
-        vendorHash = null;
+        vendorHash = "sha256-7hRezOBcjB2wsx/SwV519wg3Azh+0kHMcAoc9aYPM3A=";
         subPackages = [ "cmd" ];
         meta = with pkgs.lib; {
           description = "Schedule pre-recorded RTMP streams via systemd";
@@ -55,6 +52,42 @@
               type = lib.types.str;
               default = "/var/lib/streamctl/videos";
               description = "Directory where video files are uploaded via scp.";
+            };
+
+            cacheDir = lib.mkOption {
+              type = lib.types.str;
+              default = "/var/lib/streamctl/cache";
+              description = "Directory where remote video files are prefetched before streaming.";
+            };
+
+            remote = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "rclone remote root for prefetched clips, e.g. spaces:bucket.";
+            };
+
+            rcloneConfigFile = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Optional path to an rclone config file used by generated prefetch units.";
+            };
+
+            notificationEmail = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Email address for prefetch success/failure notifications. Empty disables email.";
+            };
+
+            sendmailPath = lib.mkOption {
+              type = lib.types.str;
+              default = "${pkgs.msmtp}/bin/sendmail";
+              description = "sendmail-compatible binary used for prefetch notification email.";
+            };
+
+            cleanupCache = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Delete cached remote files after ffmpeg exits successfully.";
             };
 
             dataDir = lib.mkOption {
@@ -97,6 +130,7 @@
             systemd.tmpfiles.rules = [
               "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.videoDir} 0750 ${cfg.user} ${cfg.group} - -"
+              "d ${cfg.cacheDir} 0750 ${cfg.user} ${cfg.group} - -"
             ];
 
             systemd.services.streamctl = {
@@ -104,7 +138,7 @@
               after = [ "network.target" ];
               wantedBy = [ "multi-user.target" ];
 
-              path = [ pkgs.systemd pkgs.ffmpeg ];
+              path = [ pkgs.systemd pkgs.ffmpeg pkgs.rclone pkgs.msmtp ];
 
               serviceConfig = {
                 Type = "simple";
@@ -114,12 +148,18 @@
                 Group = "root";
                 ExecStart = ''
                   ${pkg}/bin/cmd \
-                    -listen ${cfg.listen} \
-                    -db ${cfg.dataDir}/streamctl.db \
-                    -video-dir ${cfg.videoDir} \
-                    -unit-dir /etc/systemd/system \
-                    -unit-prefix streamctl- \
-                    -run-user ${cfg.user}
+                    -listen=${cfg.listen} \
+                    -db=${cfg.dataDir}/streamctl.db \
+                    -video-dir=${cfg.videoDir} \
+                    -cache-dir=${cfg.cacheDir} \
+                    -remote=${cfg.remote} \
+                    -rclone-config=${cfg.rcloneConfigFile} \
+                    -notify-email=${cfg.notificationEmail} \
+                    -sendmail=${cfg.sendmailPath} \
+                    -cleanup-cache=${lib.boolToString cfg.cleanupCache} \
+                    -unit-dir=/etc/systemd/system \
+                    -unit-prefix=streamctl- \
+                    -run-user=${cfg.user}
                 '';
                 EnvironmentFile = "-/run/streamctl/env";
                 Restart = "on-failure";

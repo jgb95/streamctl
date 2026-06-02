@@ -13,12 +13,18 @@ import (
 
 func main() {
 	var (
-		listen     = flag.String("listen", ":8080", "address to listen on")
-		dbPath     = flag.String("db", "/var/lib/streamctl/streamctl.db", "path to SQLite database")
-		videoDir   = flag.String("video-dir", "/var/lib/streamctl/videos", "directory containing video files")
-		unitDir    = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
-		unitPrefix = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
-		runUser    = flag.String("run-user", "streamctl", "user to run streams as")
+		listen       = flag.String("listen", ":8080", "address to listen on")
+		dbPath       = flag.String("db", "/var/lib/streamctl/streamctl.db", "path to SQLite database")
+		videoDir     = flag.String("video-dir", "/var/lib/streamctl/videos", "directory containing video files")
+		cacheDir     = flag.String("cache-dir", "/var/lib/streamctl/cache", "directory for prefetched remote video files")
+		remote       = flag.String("remote", "", "rclone remote for Spaces objects, e.g. spaces:bucket")
+		rcloneCfg    = flag.String("rclone-config", "", "path to rclone config file for generated prefetch services")
+		notifyEmail  = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
+		sendmailPath = flag.String("sendmail", "/run/current-system/sw/bin/sendmail", "sendmail-compatible binary for notifications")
+		cleanupCache = flag.Bool("cleanup-cache", true, "delete cached remote files after successful streaming")
+		unitDir      = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
+		unitPrefix   = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
+		runUser      = flag.String("run-user", "streamctl", "user to run streams as")
 	)
 	flag.Parse()
 
@@ -38,16 +44,23 @@ func main() {
 	}
 
 	sysd := &systemd.Manager{
-		UnitDir:    *unitDir,
-		UnitPrefix: *unitPrefix,
-		RunUser:    *runUser,
-		VideoDir:   *videoDir,
+		UnitDir:      *unitDir,
+		UnitPrefix:   *unitPrefix,
+		RunUser:      *runUser,
+		VideoDir:     *videoDir,
+		CacheDir:     *cacheDir,
+		Remote:       *remote,
+		RcloneConfig: *rcloneCfg,
+		NotifyEmail:  *notifyEmail,
+		SendmailPath: *sendmailPath,
+		CleanupCache: *cleanupCache,
 	}
 
 	h := &handlers.Handler{
 		DB:       database,
 		Secret:   secret,
 		VideoDir: *videoDir,
+		CacheDir: *cacheDir,
 		Systemd:  sysd,
 	}
 

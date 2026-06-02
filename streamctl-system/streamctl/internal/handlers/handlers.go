@@ -1,13 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"crypto/subtle"
 	"embed"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,17 +31,14 @@ type Handler struct {
 	DB       *db.DB
 	Secret   string
 	VideoDir string
+	CacheDir string
 	Systemd  *systemd.Manager
 
-	tmpl *template.Template
+	funcs template.FuncMap
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	tmpls, err := fs.Sub(templateFS, "templates")
-	if err != nil {
-		panic(err)
-	}
-	h.tmpl = template.Must(template.New("").Funcs(template.FuncMap{
+	h.funcs = template.FuncMap{
 		"formatTime": func(t time.Time) string { return t.Format("2006-01-02 15:04") },
 		"contains": func(slice []int64, id int64) bool {
 			for _, x := range slice {
@@ -46,7 +48,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 			}
 			return false
 		},
-	}).ParseFS(tmpls, "*.html"))
+	}
 
 	mux.HandleFunc("/login", h.login)
 	mux.HandleFunc("/logout", h.logout)
@@ -64,6 +66,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/endpoints/create", h.auth(http.HandlerFunc(h.endpointCreate)))
 	mux.Handle("/endpoints/update/", h.auth(http.HandlerFunc(h.endpointUpdate)))
 	mux.Handle("/endpoints/delete/", h.auth(http.HandlerFunc(h.endpointDelete)))
+	mux.Handle("/endpoints/test/", h.auth(http.HandlerFunc(h.endpointTest)))
 }
 
 // ---------- auth ----------
@@ -157,6 +160,7 @@ func (h *Handler) streamNew(w http.ResponseWriter, r *http.Request) {
 	}
 	h.render(w, "stream_form.html", map[string]any{
 		"Videos":          files,
+		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
 		"Endpoints":       endpoints,
 		"SelectedIDs":     allIDs, // default = all
 		"FormAction":      "/streams/create",
@@ -220,6 +224,7 @@ func (h *Handler) streamEdit(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "stream_form.html", map[string]any{
 		"Stream":          s,
 		"Videos":          files,
+		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
 		"Endpoints":       endpoints,
 		"SelectedIDs":     selected,
 		"FormAction":      fmt.Sprintf("/streams/update/%d", s.ID),
@@ -283,7 +288,12 @@ func (h *Handler) streamStart(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := h.Systemd.StartNow(id); err != nil {
+	s, err := h.DB.GetStream(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err := h.Systemd.Start(s); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -315,15 +325,16 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 		if v == "" {
 			continue
 		}
-		if strings.Contains(v, "/") || strings.Contains(v, "..") {
-			return nil, nil, nil, fmt.Errorf("video_file must be a bare filename: %q", v)
+		clean, err := cleanClipSource(v)
+		if err != nil {
+			return nil, nil, nil, err
 		}
-		videos = append(videos, v)
+		videos = append(videos, clean)
 	}
 	if len(videos) == 0 {
 		return nil, nil, nil, fmt.Errorf("at least one video clip required")
 	}
-	if err := probe.ValidatePlaylist(h.VideoDir, videos); err != nil {
+	if err := h.validateCachedPlaylist(videos); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -362,7 +373,14 @@ func (h *Handler) endpoints(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.render(w, "endpoints.html", map[string]any{"Endpoints": eps})
+	q := r.URL.Query()
+	testID, _ := strconv.ParseInt(q.Get("id"), 10, 64)
+	h.render(w, "endpoints.html", map[string]any{
+		"Endpoints":  eps,
+		"TestResult": q.Get("test"),
+		"TestID":     testID,
+		"TestErr":    q.Get("err"),
+	})
 }
 
 func (h *Handler) endpointCreate(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +438,57 @@ func (h *Handler) endpointUpdate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/endpoints", http.StatusSeeOther)
 }
 
+// endpointTest pushes a short ffmpeg-generated test pattern to the endpoint
+// to confirm the URL+key are accepted. Synchronous: blocks until ffmpeg
+// exits or the timeout fires, then redirects back to /endpoints with the
+// result encoded in the query string.
+func (h *Handler) endpointTest(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/endpoints/test/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	e, err := h.DB.GetEndpoint(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	target := strings.TrimRight(e.RtmpURL, "/") + "/" + e.StreamKey
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx,
+		"ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-re",
+		"-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30",
+		"-f", "lavfi", "-i", "sine=frequency=440",
+		"-shortest", "-t", "8",
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+		"-pix_fmt", "yuv420p", "-b:v", "2000k",
+		"-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+		"-f", "flv", target,
+	)
+	out, runErr := cmd.CombinedOutput()
+
+	q := url.Values{}
+	q.Set("id", strconv.FormatInt(id, 10))
+	if runErr != nil {
+		q.Set("test", "fail")
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = runErr.Error()
+		}
+		if len(msg) > 500 {
+			msg = msg[:500] + "..."
+		}
+		q.Set("err", msg)
+	} else {
+		q.Set("test", "ok")
+	}
+	http.Redirect(w, r, "/endpoints?"+q.Encode(), http.StatusSeeOther)
+}
+
 func (h *Handler) endpointDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "/endpoints/delete/")
 	if !ok {
@@ -470,6 +539,77 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 
 // ---------- helpers ----------
 
+// bitratesJSON probes each file for its container bitrate and returns a JSON
+// object {"file.mp4": 9876543, ...} suitable for embedding in a <script> tag.
+// Files that ffprobe can't read or that don't expose a bitrate are omitted;
+// the client falls back to 0 for those, which is fine for an estimate.
+func bitratesJSON(videoDir string, files []string) template.JS {
+	out := make(map[string]int, len(files))
+	for _, f := range files {
+		bps, err := probe.Bitrate(videoDir, f)
+		if err != nil || bps == 0 {
+			continue
+		}
+		out[f] = bps
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return template.JS("{}")
+	}
+	return template.JS(b)
+}
+
+func (h *Handler) validateCachedPlaylist(videos []string) error {
+	var paths []string
+	var labels []string
+	for _, v := range videos {
+		path := h.localClipPath(v)
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) && isRemoteClip(v) {
+				continue
+			}
+			return fmt.Errorf("checking %s: %w", v, err)
+		}
+		paths = append(paths, path)
+		labels = append(labels, v)
+	}
+	if len(paths) < 2 {
+		return nil
+	}
+	return probe.ValidatePlaylistPaths(paths, labels)
+}
+
+func (h *Handler) localClipPath(source string) string {
+	if isRemoteClip(source) {
+		return filepath.Join(h.CacheDir, source)
+	}
+	return filepath.Join(h.VideoDir, source)
+}
+
+func isRemoteClip(source string) bool {
+	return strings.Contains(source, "/")
+}
+
+func cleanClipSource(source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(source) {
+		return "", fmt.Errorf("video_file must be relative: %q", source)
+	}
+	clean := filepath.ToSlash(filepath.Clean(source))
+	if clean == "." || clean == "" {
+		return "", nil
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("video_file must not contain traversal: %q", source)
+		}
+	}
+	return clean, nil
+}
+
 func (h *Handler) listVideos() ([]string, error) {
 	entries, err := os.ReadDir(h.VideoDir)
 	if err != nil {
@@ -494,8 +634,18 @@ func (h *Handler) listVideos() ([]string, error) {
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
+	tmpls, err := fs.Sub(templateFS, "templates")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmpl, err := template.New("").Funcs(h.funcs).ParseFS(tmpls, "layout.html", name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.tmpl.ExecuteTemplate(w, name, data); err != nil {
+	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

@@ -23,7 +23,10 @@ type Profile struct {
 }
 
 func Probe(videoDir, file string) (*Profile, error) {
-	path := filepath.Join(videoDir, file)
+	return ProbePath(filepath.Join(videoDir, file), file)
+}
+
+func ProbePath(path, label string) (*Profile, error) {
 	cmd := exec.Command("ffprobe",
 		"-v", "error",
 		"-print_format", "json",
@@ -33,9 +36,9 @@ func Probe(videoDir, file string) (*Profile, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("ffprobe %s: %s", file, string(ee.Stderr))
+			return nil, fmt.Errorf("ffprobe %s: %s", label, string(ee.Stderr))
 		}
-		return nil, fmt.Errorf("ffprobe %s: %w", file, err)
+		return nil, fmt.Errorf("ffprobe %s: %w", label, err)
 	}
 
 	var raw struct {
@@ -51,7 +54,7 @@ func Probe(videoDir, file string) (*Profile, error) {
 		} `json:"streams"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parsing ffprobe output for %s: %w", file, err)
+		return nil, fmt.Errorf("parsing ffprobe output for %s: %w", label, err)
 	}
 
 	p := &Profile{}
@@ -74,7 +77,7 @@ func Probe(videoDir, file string) (*Profile, error) {
 		}
 	}
 	if p.VideoCodec == "" {
-		return nil, fmt.Errorf("%s has no video stream", file)
+		return nil, fmt.Errorf("%s has no video stream", label)
 	}
 	return p, nil
 }
@@ -83,26 +86,73 @@ func Probe(videoDir, file string) (*Profile, error) {
 // pair of clips would break a `-c copy` concat (codec/resolution/framerate/
 // pixel format / audio params mismatch).
 func ValidatePlaylist(videoDir string, files []string) error {
-	if len(files) == 0 {
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = filepath.Join(videoDir, f)
+	}
+	return ValidatePlaylistPaths(paths, files)
+}
+
+func ValidatePlaylistPaths(paths, labels []string) error {
+	if len(paths) == 0 {
 		return fmt.Errorf("playlist is empty")
 	}
 	var first *Profile
 	var firstFile string
-	for _, f := range files {
-		p, err := Probe(videoDir, f)
+	for i, path := range paths {
+		label := path
+		if i < len(labels) && labels[i] != "" {
+			label = labels[i]
+		}
+		p, err := ProbePath(path, label)
 		if err != nil {
 			return err
 		}
 		if first == nil {
 			first = p
-			firstFile = f
+			firstFile = label
 			continue
 		}
 		if d := profileDiff(first, p); d != "" {
-			return fmt.Errorf("clips %q and %q differ on %s — concat with -c copy requires identical streams", firstFile, f, d)
+			return fmt.Errorf("clips %q and %q differ on %s — concat with -c copy requires identical streams", firstFile, label, d)
 		}
 	}
 	return nil
+}
+
+// Bitrate returns the format-level bitrate of a file in bits/sec, or 0 if
+// ffprobe doesn't report one (some MKV/MOV containers omit it).
+func Bitrate(videoDir, file string) (int, error) {
+	path := filepath.Join(videoDir, file)
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-show_entries", "format=bit_rate",
+		"-print_format", "json",
+		path,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return 0, fmt.Errorf("ffprobe %s: %s", file, string(ee.Stderr))
+		}
+		return 0, fmt.Errorf("ffprobe %s: %w", file, err)
+	}
+	var raw struct {
+		Format struct {
+			BitRate string `json:"bit_rate"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return 0, fmt.Errorf("parsing ffprobe output for %s: %w", file, err)
+	}
+	if raw.Format.BitRate == "" {
+		return 0, nil
+	}
+	var bps int
+	if _, err := fmt.Sscanf(raw.Format.BitRate, "%d", &bps); err != nil {
+		return 0, nil
+	}
+	return bps, nil
 }
 
 func profileDiff(a, b *Profile) string {

@@ -10,16 +10,12 @@
 
 	<div class="field">
 		<label>Playlist clips</label>
-		{{if .Videos}}
+		{{if or .Videos .Stream}}
 		<ol id="clips" class="clip-list">
 			{{if and .Stream .Stream.Videos}}
 				{{range $i, $v := .Stream.Videos}}
 				<li class="clip-row">
-					<select name="video_file" required>
-						{{range $.Videos}}
-						<option value="{{.}}" {{if eq . $v}}selected{{end}}>{{.}}</option>
-						{{end}}
-					</select>
+					<input type="text" name="video_file" value="{{$v}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
 					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
@@ -27,20 +23,19 @@
 				{{end}}
 			{{else}}
 				<li class="clip-row">
-					<select name="video_file" required>
-						{{range .Videos}}<option value="{{.}}">{{.}}</option>{{end}}
-					</select>
+					<input type="text" name="video_file" value="{{if .Videos}}{{index .Videos 0}}{{end}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
 					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
 				</li>
 			{{end}}
 		</ol>
+		<datalist id="video-files">
+			{{range .Videos}}<option value="{{.}}"></option>{{end}}
+		</datalist>
 		<template id="clip-template">
 			<li class="clip-row">
-				<select name="video_file" required>
-					{{range .Videos}}<option value="{{.}}">{{.}}</option>{{end}}
-				</select>
+				<input type="text" name="video_file" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
 				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
@@ -50,10 +45,30 @@
 		<div class="hint">
 			Clips play back-to-back as a single uninterrupted stream.
 			All clips must share codec, resolution, frame rate, pixel format, and audio params — verified with ffprobe on save.
-			scp files to the video directory on the server, then refresh this page to see them.
+			Use a local uploaded filename or a Spaces object path relative to the configured remote.
 		</div>
 		{{else}}
-		<div class="muted">No videos found in the upload directory.</div>
+		<ol id="clips" class="clip-list">
+			<li class="clip-row">
+				<input type="text" name="video_file" list="video-files" placeholder="vienna/recordings/edits/livestream/file.mp4" required>
+				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
+				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
+				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
+			</li>
+		</ol>
+		<datalist id="video-files"></datalist>
+		<template id="clip-template">
+			<li class="clip-row">
+				<input type="text" name="video_file" list="video-files" placeholder="vienna/recordings/edits/livestream/file.mp4" required>
+				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
+				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
+				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
+			</li>
+		</template>
+		<button type="button" class="btn" onclick="addClip()">+ Add clip</button>
+		<div class="hint">
+			Use Spaces object paths relative to the configured remote. Clips are prefetched to local cache before streaming.
+		</div>
 		{{end}}
 	</div>
 
@@ -91,6 +106,7 @@
 			{{end}}
 		</div>
 		<div class="hint">Defaults to all endpoints. Uncheck to exclude any from this stream.</div>
+		<div id="bandwidth-est" class="hint" style="margin-top: 8px; color: var(--text);"></div>
 		{{else}}
 		<div class="muted">No endpoints configured. <a href="/endpoints">Add one</a>.</div>
 		{{end}}
@@ -108,16 +124,20 @@
 </form>
 
 <script>
+const VIDEO_BPS = {{.BitratesJSON}};
+
 function addClip() {
 	const tpl = document.getElementById('clip-template');
 	const list = document.getElementById('clips');
 	if (!tpl || !list) return;
 	list.appendChild(tpl.content.cloneNode(true));
+	updateBandwidth();
 }
 function removeClip(btn) {
 	const list = document.getElementById('clips');
 	if (!list || list.children.length <= 1) return;
 	btn.closest('li').remove();
+	updateBandwidth();
 }
 function moveClip(btn, dir) {
 	const li = btn.closest('li');
@@ -125,5 +145,28 @@ function moveClip(btn, dir) {
 	if (!sib) return;
 	li.parentNode.insertBefore(dir < 0 ? li : sib, dir < 0 ? sib : li);
 }
+
+function updateBandwidth() {
+	const out = document.getElementById('bandwidth-est');
+	if (!out) return;
+	const clipBps = [...document.querySelectorAll('#clips input[name="video_file"]')]
+		.map(s => VIDEO_BPS[s.value] || 0);
+	const peakBps = clipBps.length ? Math.max(...clipBps) : 0;
+	const epCount = document.querySelectorAll('input[name="endpoint_ids"]:checked:not(:disabled)').length;
+	if (!peakBps || !epCount) {
+		out.textContent = peakBps
+			? 'Estimated peak upload: — (no endpoints selected)'
+			: 'Estimated peak upload: — (clip bitrate unknown)';
+		return;
+	}
+	const total = peakBps * epCount;
+	const peakMbps = (peakBps / 1e6).toFixed(1);
+	const totalMbps = (total / 1e6).toFixed(1);
+	out.textContent = `Estimated peak upload: ${totalMbps} Mbps (${peakMbps} Mbps × ${epCount} endpoint${epCount === 1 ? '' : 's'})`;
+}
+
+document.addEventListener('change', updateBandwidth);
+document.addEventListener('DOMContentLoaded', updateBandwidth);
+updateBandwidth();
 </script>
 {{end}}
