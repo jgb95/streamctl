@@ -13,7 +13,7 @@ import (
 // Manager generates systemd service + timer units for streams,
 // and reloads/enables/disables them via systemctl.
 type Manager struct {
-	UnitDir      string // e.g. /etc/systemd/system
+	UnitDir      string // e.g. /run/systemd/system
 	UnitPrefix   string // e.g. "streamctl-"
 	RunUser      string
 	VideoDir     string
@@ -82,7 +82,7 @@ func (m *Manager) Sync(s *db.Stream) error {
 	if err := systemctl("daemon-reload"); err != nil {
 		return err
 	}
-	if err := systemctl("enable", "--now", m.timerName(s.ID)); err != nil {
+	if err := systemctl("start", m.timerName(s.ID)); err != nil {
 		return err
 	}
 	if m.needsPrefetch(s) {

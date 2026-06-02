@@ -56,6 +56,17 @@ func main() {
 		CleanupCache: *cleanupCache,
 	}
 
+	streams, err := database.ListStreams()
+	if err != nil {
+		log.Printf("listing streams for startup sync: %v", err)
+	} else {
+		for i := range streams {
+			if err := sysd.Sync(&streams[i]); err != nil {
+				log.Printf("startup sync for stream %d failed: %v", streams[i].ID, err)
+			}
+		}
+	}
+
 	h := &handlers.Handler{
 		DB:       database,
 		Secret:   secret,

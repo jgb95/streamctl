@@ -157,7 +157,7 @@
                     -notify-email=${cfg.notificationEmail} \
                     -sendmail=${cfg.sendmailPath} \
                     -cleanup-cache=${lib.boolToString cfg.cleanupCache} \
-                    -unit-dir=/etc/systemd/system \
+                    -unit-dir=/run/systemd/system \
                     -unit-prefix=streamctl- \
                     -run-user=${cfg.user}
                 '';
