@@ -16,7 +16,7 @@ IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
 .PHONY: help init plan create ip wait-for-nixos pull-hardware-config \
         bootstrap-secret deploy deploy-local-build deploy-dry update \
         build shell run-local \
-        ssh logs timers destroy check-token check-ip stream-logs upload install-rclone-config maybe-install-rclone-config
+        ssh logs timers destroy check-token check-ip stream-logs upload install-rclone-config maybe-install-rclone-config backup-db
 
 # ---------- help ----------
 
@@ -156,6 +156,12 @@ ssh: check-ip ## SSH into the droplet.
 
 logs: check-ip ## Tail streamctl logs.
 	ssh root@$(IP) 'journalctl -u streamctl -f'
+
+backup-db: check-ip ## Copy the server SQLite DB to ./backups with a timestamp.
+	@mkdir -p backups
+	@TS=$$(date -u +%Y%m%dT%H%M%SZ); \
+	  scp root@$(IP):/var/lib/streamctl/streamctl.db backups/streamctl-$$TS.db; \
+	  echo "Backed up database to backups/streamctl-$$TS.db"
 
 # Usage: make stream-logs ID=3
 stream-logs: check-ip ## Tail logs for a specific scheduled stream (ID=N).
