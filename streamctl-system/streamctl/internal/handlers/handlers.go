@@ -346,6 +346,7 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 	if onCalendar == "" {
 		return nil, nil, nil, fmt.Errorf("on_calendar required")
 	}
+	onCalendar = normalizeOnCalendar(onCalendar)
 
 	var ids []int64
 	for _, v := range r.Form["endpoint_ids"] {
@@ -608,6 +609,17 @@ func cleanClipSource(source string) (string, error) {
 		}
 	}
 	return clean, nil
+}
+
+func normalizeOnCalendar(onCalendar string) string {
+	onCalendar = strings.TrimSpace(onCalendar)
+	if len(onCalendar) > len("UTC") && strings.HasSuffix(onCalendar, "UTC") {
+		i := len(onCalendar) - len("UTC") - 1
+		if i >= 0 && onCalendar[i] != ' ' && onCalendar[i] != '\t' {
+			return onCalendar[:i+1] + " UTC"
+		}
+	}
+	return onCalendar
 }
 
 func (h *Handler) listVideos() ([]string, error) {

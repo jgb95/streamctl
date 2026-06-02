@@ -257,10 +257,21 @@ Persistent=%s
 WantedBy=timers.target
 `,
 		shellEscape(s.Name),
-		s.OnCalendar,
+		normalizeOnCalendar(s.OnCalendar),
 		m.serviceName(s.ID),
 		persistent,
 	)
+}
+
+func normalizeOnCalendar(onCalendar string) string {
+	onCalendar = strings.TrimSpace(onCalendar)
+	if len(onCalendar) > len("UTC") && strings.HasSuffix(onCalendar, "UTC") {
+		i := len(onCalendar) - len("UTC") - 1
+		if i >= 0 && onCalendar[i] != ' ' && onCalendar[i] != '\t' {
+			return onCalendar[:i+1] + " UTC"
+		}
+	}
+	return onCalendar
 }
 
 func (m *Manager) renderPrefetchScript(s *db.Stream) string {
