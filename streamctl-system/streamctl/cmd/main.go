@@ -23,6 +23,9 @@ func main() {
 		notifyEmail  = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
 		sendmailPath = flag.String("sendmail", "/run/current-system/sw/bin/sendmail", "sendmail-compatible binary for notifications")
 		cleanupCache = flag.Bool("cleanup-cache", true, "delete cached remote files after successful streaming")
+		normalize    = flag.Bool("normalize-prefetch", true, "re-encode prefetched remote clips to streaming-friendly CBR before streaming")
+		videoBitrate = flag.String("normalize-video-bitrate", "6800k", "video bitrate for normalized prefetched clips")
+		audioBitrate = flag.String("normalize-audio-bitrate", "160k", "audio bitrate for normalized prefetched clips")
 		unitDir      = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
 		unitPrefix   = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
 		runUser      = flag.String("run-user", "streamctl", "user to run streams as")
@@ -56,6 +59,9 @@ func main() {
 		NotifyEmail:  *notifyEmail,
 		SendmailPath: *sendmailPath,
 		CleanupCache: *cleanupCache,
+		Normalize:    *normalize,
+		VideoBitrate: *videoBitrate,
+		AudioBitrate: *audioBitrate,
 	}
 
 	streams, err := database.ListStreams()

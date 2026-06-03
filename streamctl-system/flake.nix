@@ -96,6 +96,24 @@
               description = "Delete cached remote files after ffmpeg exits successfully.";
             };
 
+            normalizePrefetch = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Re-encode prefetched remote clips to streaming-friendly CBR before streaming.";
+            };
+
+            normalizeVideoBitrate = lib.mkOption {
+              type = lib.types.str;
+              default = "6800k";
+              description = "Target video bitrate for normalized prefetched clips.";
+            };
+
+            normalizeAudioBitrate = lib.mkOption {
+              type = lib.types.str;
+              default = "160k";
+              description = "Target audio bitrate for normalized prefetched clips.";
+            };
+
             dataDir = lib.mkOption {
               type = lib.types.str;
               default = "/var/lib/streamctl";
@@ -165,6 +183,9 @@
                     -notify-email=${cfg.notificationEmail} \
                     -sendmail=${cfg.sendmailPath} \
                     -cleanup-cache=${lib.boolToString cfg.cleanupCache} \
+                    -normalize-prefetch=${lib.boolToString cfg.normalizePrefetch} \
+                    -normalize-video-bitrate=${cfg.normalizeVideoBitrate} \
+                    -normalize-audio-bitrate=${cfg.normalizeAudioBitrate} \
                     -unit-dir=/run/systemd/system \
                     -unit-prefix=streamctl- \
                     -run-user=${cfg.user}

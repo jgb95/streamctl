@@ -26,6 +26,9 @@ type Manager struct {
 	NotifyEmail  string
 	SendmailPath string
 	CleanupCache bool
+	Normalize    bool
+	VideoBitrate string
+	AudioBitrate string
 }
 
 type UnitLog struct {
@@ -262,9 +265,10 @@ func (m *Manager) RemoveCachedClips(s *db.Stream) error {
 		if !isRemoteClip(v) {
 			continue
 		}
-		path := m.localClipPath(v)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+		for _, path := range m.remoteCachePaths(v) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+			}
 		}
 	}
 	if len(errs) > 0 {
@@ -408,7 +412,7 @@ Type=oneshot
 User=%s
 %s
 ExecStart=%s
-TimeoutStartSec=1h
+TimeoutStartSec=12h
 StandardOutput=journal
 StandardError=journal
 `,
@@ -477,30 +481,87 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		if !isRemoteClip(v) {
 			continue
 		}
+		raw := m.rawRemoteClipPath(v)
 		local := m.localClipPath(v)
 		b.WriteString("/run/current-system/sw/bin/mkdir -p ")
-		b.WriteString(shellQuote(filepath.Dir(local)))
+		b.WriteString(shellQuote(filepath.Dir(raw)))
+		if m.Normalize {
+			b.WriteString(" ")
+			b.WriteString(shellQuote(filepath.Dir(local)))
+		}
 		b.WriteString("\n")
+		if m.Normalize {
+			b.WriteString("if [ -f ")
+			b.WriteString(shellQuote(local))
+			b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
+			b.WriteString(shellQuote(local))
+			b.WriteString(" >/dev/null; then\n")
+			b.WriteString("  echo ")
+			b.WriteString(shellQuote("prefetch: using normalized cache " + v))
+			b.WriteString("\n")
+			b.WriteString("else\n")
+		}
 		b.WriteString("if [ -f ")
-		b.WriteString(shellQuote(local))
+		b.WriteString(shellQuote(raw))
 		b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-		b.WriteString(shellQuote(local))
+		b.WriteString(shellQuote(raw))
 		b.WriteString(" >/dev/null; then\n")
 		b.WriteString("  echo ")
-		b.WriteString(shellQuote("prefetch: using cached " + v))
+		b.WriteString(shellQuote("prefetch: using raw cache " + v))
 		b.WriteString("\n")
 		b.WriteString("else\n")
 		b.WriteString("/run/current-system/sw/bin/rclone copyto ")
 		b.WriteString(shellQuote(strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + v))
 		b.WriteString(" ")
-		b.WriteString(shellQuote(local))
+		b.WriteString(shellQuote(raw))
 		b.WriteString("\n")
 		b.WriteString("fi\n")
+		if m.Normalize {
+			b.WriteString(m.renderNormalizeCommand(raw, local))
+			b.WriteString("fi\n")
+		}
 	}
 	b.WriteString(m.renderProbeScript(s))
 	if strings.TrimSpace(m.NotifyEmail) != "" {
 		b.WriteString("notify success\n")
 	}
+	return b.String()
+}
+
+func (m *Manager) renderNormalizeCommand(input, output string) string {
+	tmp := output + ".tmp"
+	var b strings.Builder
+	b.WriteString("echo ")
+	b.WriteString(shellQuote("prefetch: normalizing " + filepath.Base(input)))
+	b.WriteString("\n")
+	b.WriteString("/run/current-system/sw/bin/rm -f -- ")
+	b.WriteString(shellQuote(tmp))
+	b.WriteString("\n")
+	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -y -i ")
+	b.WriteString(shellQuote(input))
+	b.WriteString(" -map 0:v:0 -map 0:a:0 -dn -sn")
+	b.WriteString(" -c:v libx264 -preset veryfast -profile:v high -pix_fmt yuv420p")
+	b.WriteString(" -r 30 -g 60 -keyint_min 60 -sc_threshold 0")
+	b.WriteString(" -b:v ")
+	b.WriteString(shellQuote(m.normalizeVideoBitrate()))
+	b.WriteString(" -minrate ")
+	b.WriteString(shellQuote(m.normalizeVideoBitrate()))
+	b.WriteString(" -maxrate ")
+	b.WriteString(shellQuote(m.normalizeVideoBitrate()))
+	b.WriteString(" -bufsize ")
+	b.WriteString(shellQuote(m.normalizeBufsize()))
+	b.WriteString(" -x264-params ")
+	b.WriteString(shellQuote("nal-hrd=cbr:force-cfr=1"))
+	b.WriteString(" -c:a aac -b:a ")
+	b.WriteString(shellQuote(m.normalizeAudioBitrate()))
+	b.WriteString(" -ar 48000 -ac 2 -movflags +faststart ")
+	b.WriteString(shellQuote(tmp))
+	b.WriteString("\n")
+	b.WriteString("/run/current-system/sw/bin/mv -f -- ")
+	b.WriteString(shellQuote(tmp))
+	b.WriteString(" ")
+	b.WriteString(shellQuote(output))
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -609,9 +670,11 @@ func (m *Manager) renderCleanupScriptBody(s *db.Stream) string {
 		if !isRemoteClip(v) {
 			continue
 		}
-		b.WriteString("/run/current-system/sw/bin/rm -f -- ")
-		b.WriteString(shellQuote(m.localClipPath(v)))
-		b.WriteString("\n")
+		for _, path := range m.remoteCachePaths(v) {
+			b.WriteString("/run/current-system/sw/bin/rm -f -- ")
+			b.WriteString(shellQuote(path))
+			b.WriteString("\n")
+		}
 	}
 	return b.String()
 }
@@ -627,9 +690,30 @@ func (m *Manager) needsPrefetch(s *db.Stream) bool {
 
 func (m *Manager) localClipPath(source string) string {
 	if isRemoteClip(source) {
+		if m.Normalize {
+			return m.normalizedClipPath(source)
+		}
 		return filepath.Join(m.CacheDir, source)
 	}
 	return filepath.Join(m.VideoDir, source)
+}
+
+func (m *Manager) rawRemoteClipPath(source string) string {
+	return filepath.Join(m.CacheDir, source)
+}
+
+func (m *Manager) normalizedClipPath(source string) string {
+	ext := filepath.Ext(source)
+	base := strings.TrimSuffix(source, ext)
+	return filepath.Join(m.CacheDir, "normalized", base+".mp4")
+}
+
+func (m *Manager) remoteCachePaths(source string) []string {
+	paths := []string{m.rawRemoteClipPath(source)}
+	if m.Normalize {
+		paths = append(paths, m.normalizedClipPath(source))
+	}
+	return paths
 }
 
 func isRemoteClip(source string) bool {
@@ -724,4 +808,29 @@ func (m *Manager) sendmailPath() string {
 		return m.SendmailPath
 	}
 	return "/run/current-system/sw/bin/sendmail"
+}
+
+func (m *Manager) normalizeVideoBitrate() string {
+	if strings.TrimSpace(m.VideoBitrate) != "" {
+		return strings.TrimSpace(m.VideoBitrate)
+	}
+	return "6800k"
+}
+
+func (m *Manager) normalizeAudioBitrate() string {
+	if strings.TrimSpace(m.AudioBitrate) != "" {
+		return strings.TrimSpace(m.AudioBitrate)
+	}
+	return "160k"
+}
+
+func (m *Manager) normalizeBufsize() string {
+	video := m.normalizeVideoBitrate()
+	if strings.HasSuffix(video, "k") {
+		n, err := strconv.Atoi(strings.TrimSuffix(video, "k"))
+		if err == nil && n > 0 {
+			return strconv.Itoa(n*2) + "k"
+		}
+	}
+	return video
 }
