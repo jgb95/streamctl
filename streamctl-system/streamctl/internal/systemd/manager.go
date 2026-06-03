@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"streamctl/internal/db"
 )
@@ -53,6 +55,10 @@ func (m *Manager) playlistName(streamID int64) string {
 	return fmt.Sprintf("%sstream-%d.playlist", m.UnitPrefix, streamID)
 }
 
+func (m *Manager) runScriptName(streamID int64) string {
+	return fmt.Sprintf("%sstream-%d-run.sh", m.UnitPrefix, streamID)
+}
+
 func (m *Manager) prefetchScriptName(streamID int64) string {
 	return fmt.Sprintf("%sprefetch-%d.sh", m.UnitPrefix, streamID)
 }
@@ -67,6 +73,10 @@ func (m *Manager) cleanupScriptName(streamID int64) string {
 
 func (m *Manager) playlistPath(streamID int64) string {
 	return filepath.Join(m.UnitDir, m.playlistName(streamID))
+}
+
+func (m *Manager) runScriptPath(streamID int64) string {
+	return filepath.Join(m.UnitDir, m.runScriptName(streamID))
 }
 
 func (m *Manager) prefetchScriptPath(streamID int64) string {
@@ -88,13 +98,14 @@ func (m *Manager) Sync(s *db.Stream) error {
 	prefetchPath := filepath.Join(m.UnitDir, m.prefetchName(s.ID))
 	timerPath := filepath.Join(m.UnitDir, m.timerName(s.ID))
 	plistPath := m.playlistPath(s.ID)
+	runScriptPath := m.runScriptPath(s.ID)
 	prefetchScriptPath := m.prefetchScriptPath(s.ID)
 	probeScriptPath := m.probeScriptPath(s.ID)
 	cleanupScriptPath := m.cleanupScriptPath(s.ID)
 
 	// Disabled, no endpoints, or no clips → remove and stop.
 	if !s.Enabled || len(enabledEndpoints(s.Endpoints)) == 0 || len(s.Videos) == 0 {
-		return m.removeUnits(s.ID, svcPath, prefetchPath, timerPath, plistPath, prefetchScriptPath, probeScriptPath, cleanupScriptPath)
+		return m.removeUnits(s.ID, svcPath, prefetchPath, timerPath, plistPath, runScriptPath, prefetchScriptPath, probeScriptPath, cleanupScriptPath)
 	}
 
 	if m.needsPrefetch(s) && strings.TrimSpace(m.Remote) == "" {
@@ -106,6 +117,9 @@ func (m *Manager) Sync(s *db.Stream) error {
 	}
 	if err := writeFileMode(probeScriptPath, m.renderProbeScript(s), 0755); err != nil {
 		return fmt.Errorf("writing probe script: %w", err)
+	}
+	if err := writeFileMode(runScriptPath, m.renderRunScript(s), 0755); err != nil {
+		return fmt.Errorf("writing stream run script: %w", err)
 	}
 	if err := writeFile(svcPath, m.renderService(s)); err != nil {
 		return fmt.Errorf("writing service: %w", err)
@@ -158,6 +172,7 @@ func (m *Manager) Remove(streamID int64) error {
 		prefetchPath,
 		timerPath,
 		plistPath,
+		m.runScriptPath(streamID),
 		m.prefetchScriptPath(streamID),
 		m.probeScriptPath(streamID),
 		m.cleanupScriptPath(streamID),
@@ -194,6 +209,24 @@ func (m *Manager) NextTrigger(streamID int64) string {
 	return strings.TrimSpace(string(out))
 }
 
+// NextTriggerUnix returns the next timer trigger as Unix seconds, or 0 when
+// the timer has no future trigger or the host cannot parse systemd's timestamp.
+func (m *Manager) NextTriggerUnix(streamID int64) int64 {
+	next := m.NextTrigger(streamID)
+	if next == "" || next == "n/a" {
+		return 0
+	}
+	out, err := exec.Command("date", "-u", "-d", next, "+%s").Output()
+	if err != nil {
+		return 0
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil || sec <= time.Now().Unix() {
+		return 0
+	}
+	return sec
+}
+
 // StartNow runs the stream service immediately, without waiting for the timer.
 func (m *Manager) StartNow(streamID int64) error {
 	return systemctl("start", m.serviceName(streamID))
@@ -202,17 +235,29 @@ func (m *Manager) StartNow(streamID int64) error {
 // Start runs the appropriate service immediately. Remote-backed streams start
 // with prefetch; local-only streams start ffmpeg directly.
 func (m *Manager) Start(s *db.Stream) error {
-	if m.needsPrefetch(s) {
-		if err := systemctl("start", m.prefetchName(s.ID)); err != nil {
-			return err
-		}
-	}
 	return m.StartNow(s.ID)
 }
 
 // Stop terminates a running stream.
 func (m *Manager) Stop(streamID int64) error {
 	return systemctl("stop", m.serviceName(streamID))
+}
+
+func (m *Manager) RemoveCachedClips(s *db.Stream) error {
+	var errs []string
+	for _, v := range s.Videos {
+		if !isRemoteClip(v) {
+			continue
+		}
+		path := m.localClipPath(v)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("removing cached clips: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func (m *Manager) Logs(streamID int64) []UnitLog {
@@ -289,26 +334,25 @@ func (m *Manager) populateUnitJournal(unit *UnitLog) error {
 // ---------- Unit rendering ----------
 
 func (m *Manager) renderService(s *db.Stream) string {
-	teeArg := buildTeeArg(s.Endpoints)
 	afterPrefetch := ""
+	requiresPrefetch := ""
 	if m.needsPrefetch(s) {
 		afterPrefetch = m.prefetchName(s.ID)
+		requiresPrefetch = "Requires=" + m.prefetchName(s.ID) + "\n"
 	}
 
 	// Stream keys are embedded in the unit file — file mode 0600 protects them.
-	// The playlist is read by the concat demuxer; -safe 0 is required because
-	// list entries are absolute paths.
 	return fmt.Sprintf(`[Unit]
 Description=streamctl: %s
 After=network-online.target %s
 Wants=network-online.target
+%s
 
 [Service]
 Type=simple
 User=%s
 ExecStartPre=%s
-ExecStart=/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i %s -c copy -f tee -map 0:v -map 0:a %s
-%s
+ExecStart=%s
 Restart=no
 TimeoutStopSec=30
 StandardOutput=journal
@@ -325,11 +369,10 @@ ReadWritePaths=%s
 `,
 		shellEscape(s.Name),
 		afterPrefetch,
+		requiresPrefetch,
 		m.RunUser,
 		systemdQuote(m.probeScriptPath(s.ID)),
-		shellQuote(m.playlistPath(s.ID)),
-		shellQuote(teeArg),
-		m.renderCleanupExec(s),
+		systemdQuote(m.runScriptPath(s.ID)),
 		m.VideoDir,
 		m.CacheDir,
 	)
@@ -446,6 +489,22 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 	return b.String()
 }
 
+func (m *Manager) renderRunScript(s *db.Stream) string {
+	var b strings.Builder
+	b.WriteString("#!/run/current-system/sw/bin/bash\n")
+	b.WriteString("set -euo pipefail\n")
+	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
+	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i ")
+	b.WriteString(shellQuote(m.playlistPath(s.ID)))
+	b.WriteString(" -c copy -f tee -map 0:v -map 0:a ")
+	b.WriteString(shellQuote(buildTeeArg(s.Endpoints)))
+	b.WriteString("\n")
+	if m.CleanupCache && m.needsPrefetch(s) {
+		b.WriteString(m.renderCleanupScriptBody(s))
+	}
+	return b.String()
+}
+
 func (m *Manager) renderNotifyFunction(s *db.Stream) string {
 	var b strings.Builder
 	b.WriteString("notify() {\n")
@@ -503,6 +562,12 @@ func (m *Manager) renderCleanupScript(s *db.Stream) string {
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
 	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
+	b.WriteString(m.renderCleanupScriptBody(s))
+	return b.String()
+}
+
+func (m *Manager) renderCleanupScriptBody(s *db.Stream) string {
+	var b strings.Builder
 	for _, v := range s.Videos {
 		if !isRemoteClip(v) {
 			continue

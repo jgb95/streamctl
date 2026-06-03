@@ -127,8 +127,9 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 
 type streamView struct {
 	db.Stream
-	Status      string
-	NextTrigger string
+	Status          string
+	NextTrigger     string
+	NextTriggerUnix int64
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
@@ -140,9 +141,10 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	views := make([]streamView, len(streams))
 	for i, s := range streams {
 		views[i] = streamView{
-			Stream:      s,
-			Status:      h.Systemd.Status(s.ID),
-			NextTrigger: h.Systemd.NextTrigger(s.ID),
+			Stream:          s,
+			Status:          h.Systemd.Status(s.ID),
+			NextTrigger:     h.Systemd.NextTrigger(s.ID),
+			NextTriggerUnix: h.Systemd.NextTriggerUnix(s.ID),
 		}
 	}
 	h.render(w, "streams.html", map[string]any{"Streams": views})
@@ -256,7 +258,16 @@ func (h *Handler) streamDelete(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s, err := h.DB.GetStream(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
 	if err := h.Systemd.Remove(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.Systemd.RemoveCachedClips(s); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
