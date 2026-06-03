@@ -537,7 +537,7 @@ func (m *Manager) renderNormalizeCommand(input, output string) string {
 	b.WriteString("/run/current-system/sw/bin/rm -f -- ")
 	b.WriteString(shellQuote(tmp))
 	b.WriteString("\n")
-	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -y -i ")
+	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -stats_period 30 -progress pipe:1 -y -i ")
 	b.WriteString(shellQuote(input))
 	b.WriteString(" -map 0:v:0 -map 0:a:0 -dn -sn")
 	b.WriteString(" -c:v libx264 -preset veryfast -profile:v high -pix_fmt yuv420p")
