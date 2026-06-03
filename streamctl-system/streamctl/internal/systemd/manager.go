@@ -518,7 +518,7 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 	b.WriteString("/run/current-system/sw/bin/find ")
 	b.WriteString(shellQuote(m.hlsPath(s.ID)))
 	b.WriteString(" -maxdepth 1 -type f -name 'segment-*.ts' -delete\n")
-	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i ")
+	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -re -f concat -safe 0 -i ")
 	b.WriteString(shellQuote(m.playlistPath(s.ID)))
 	b.WriteString(" -c copy -tag:v 7 -tag:a 10 -f tee -map 0:v -map 0:a ")
 	b.WriteString(shellQuote(m.buildTeeArg(s)))
