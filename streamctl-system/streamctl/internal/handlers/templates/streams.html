@@ -15,6 +15,7 @@
 			<th>Endpoints</th>
 			<th>Status</th>
 			<th>Next run</th>
+			<th>Countdown</th>
 			<th></th>
 		</tr>
 	</thead>
@@ -46,8 +47,12 @@
 			</td>
 			<td>
 				<span class="muted" style="font-size: 12px;">{{.NextTrigger}}</span>
+			</td>
+			<td>
 				{{if gt .NextTriggerUnix 0}}
 				<div class="countdown" data-trigger-unix="{{.NextTriggerUnix}}" style="font-size: 12px;"></div>
+				{{else}}
+				<span class="muted" style="font-size: 12px;">-</span>
 				{{end}}
 			</td>
 			<td>
