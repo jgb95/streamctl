@@ -733,10 +733,45 @@ func buildTeeArg(endpoints []db.Endpoint) string {
 		if !e.Enabled {
 			continue
 		}
-		url := strings.TrimRight(e.RtmpURL, "/") + "/" + e.StreamKey
-		parts = append(parts, fmt.Sprintf("[f=flv:onfail=ignore]%s", url))
+		switch e.Type {
+		case "youtube_hls":
+			parts = append(parts, youtubeHLSTeeArg(e.RtmpURL))
+		default:
+			url := strings.TrimRight(e.RtmpURL, "/") + "/" + e.StreamKey
+			parts = append(parts, fmt.Sprintf("[f=flv:onfail=ignore]%s", url))
+		}
 	}
 	return strings.Join(parts, "|")
+}
+
+func youtubeHLSTeeArg(template string) string {
+	base := strings.TrimSpace(template)
+	segment := hlsUploadURL(base, "segment-%06d.ts")
+	playlist := hlsUploadURL(base, "index.m3u8")
+	return fmt.Sprintf(
+		"[f=hls:method=PUT:http_persistent=1:hls_time=4:hls_list_size=8:hls_flags=delete_segments+omit_endlist:hls_segment_filename=%s]%s",
+		teeOptionEscape(segment),
+		playlist,
+	)
+}
+
+func hlsUploadURL(template, name string) string {
+	if strings.HasSuffix(template, "file=") {
+		return template + name
+	}
+	if strings.Contains(template, "file=") {
+		return template + name
+	}
+	if strings.Contains(template, "?") {
+		return template + "&file=" + name
+	}
+	return template + "?file=" + name
+}
+
+func teeOptionEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, ":", `\:`)
+	return s
 }
 
 func enabledEndpoints(eps []db.Endpoint) []db.Endpoint {

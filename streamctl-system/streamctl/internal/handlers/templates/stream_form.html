@@ -119,7 +119,7 @@
 				<input type="checkbox" name="endpoint_ids" value="{{.ID}}"
 					{{if contains $.SelectedIDs .ID}}checked{{end}}
 					{{if not .Enabled}}disabled{{end}}>
-				<span>{{.Name}} <span class="muted" style="font-size: 12px;">({{.RtmpURL}}){{if not .Enabled}} — disabled{{end}}</span></span>
+				<span>{{.Name}} <span class="muted" style="font-size: 12px;">({{.Type}}: {{.RtmpURL}}){{if not .Enabled}} — disabled{{end}}</span></span>
 			</label>
 			{{end}}
 		</div>

@@ -24,6 +24,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS endpoints (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,
+	endpoint_type TEXT NOT NULL DEFAULT 'rtmp',
 	rtmp_url TEXT NOT NULL,
 	stream_key TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
@@ -60,7 +61,10 @@ func (db *DB) Migrate() error {
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	return db.migrateLegacyVideoFile()
+	if err := db.migrateLegacyVideoFile(); err != nil {
+		return err
+	}
+	return db.migrateEndpointType()
 }
 
 // migrateLegacyVideoFile copies the old streams.video_file column into
@@ -92,6 +96,18 @@ func (db *DB) migrateLegacyVideoFile() error {
 	return tx.Commit()
 }
 
+func (db *DB) migrateEndpointType() error {
+	hasCol, err := db.hasColumn("endpoints", "endpoint_type")
+	if err != nil {
+		return err
+	}
+	if hasCol {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE endpoints ADD COLUMN endpoint_type TEXT NOT NULL DEFAULT 'rtmp'`)
+	return err
+}
+
 func (db *DB) hasColumn(table, column string) (bool, error) {
 	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
@@ -119,6 +135,7 @@ func (db *DB) hasColumn(table, column string) (bool, error) {
 
 type Endpoint struct {
 	ID        int64
+	Type      string
 	Name      string
 	RtmpURL   string
 	StreamKey string
@@ -140,7 +157,7 @@ type Stream struct {
 // ---------- Endpoint queries ----------
 
 func (db *DB) ListEndpoints() ([]Endpoint, error) {
-	rows, err := db.Query(`SELECT id, name, rtmp_url, stream_key, enabled, created_at FROM endpoints ORDER BY name`)
+	rows, err := db.Query(`SELECT id, endpoint_type, name, rtmp_url, stream_key, enabled, created_at FROM endpoints ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +167,7 @@ func (db *DB) ListEndpoints() ([]Endpoint, error) {
 	for rows.Next() {
 		var e Endpoint
 		var enabled int
-		if err := rows.Scan(&e.ID, &e.Name, &e.RtmpURL, &e.StreamKey, &enabled, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.Name, &e.RtmpURL, &e.StreamKey, &enabled, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		e.Enabled = enabled == 1
@@ -163,8 +180,8 @@ func (db *DB) GetEndpoint(id int64) (*Endpoint, error) {
 	var e Endpoint
 	var enabled int
 	err := db.QueryRow(
-		`SELECT id, name, rtmp_url, stream_key, enabled, created_at FROM endpoints WHERE id = ?`, id,
-	).Scan(&e.ID, &e.Name, &e.RtmpURL, &e.StreamKey, &enabled, &e.CreatedAt)
+		`SELECT id, endpoint_type, name, rtmp_url, stream_key, enabled, created_at FROM endpoints WHERE id = ?`, id,
+	).Scan(&e.ID, &e.Type, &e.Name, &e.RtmpURL, &e.StreamKey, &enabled, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -174,8 +191,8 @@ func (db *DB) GetEndpoint(id int64) (*Endpoint, error) {
 
 func (db *DB) CreateEndpoint(e *Endpoint) (int64, error) {
 	res, err := db.Exec(
-		`INSERT INTO endpoints (name, rtmp_url, stream_key, enabled) VALUES (?, ?, ?, ?)`,
-		e.Name, e.RtmpURL, e.StreamKey, boolInt(e.Enabled),
+		`INSERT INTO endpoints (endpoint_type, name, rtmp_url, stream_key, enabled) VALUES (?, ?, ?, ?, ?)`,
+		e.Type, e.Name, e.RtmpURL, e.StreamKey, boolInt(e.Enabled),
 	)
 	if err != nil {
 		return 0, err
@@ -185,8 +202,8 @@ func (db *DB) CreateEndpoint(e *Endpoint) (int64, error) {
 
 func (db *DB) UpdateEndpoint(e *Endpoint) error {
 	_, err := db.Exec(
-		`UPDATE endpoints SET name = ?, rtmp_url = ?, stream_key = ?, enabled = ? WHERE id = ?`,
-		e.Name, e.RtmpURL, e.StreamKey, boolInt(e.Enabled), e.ID,
+		`UPDATE endpoints SET endpoint_type = ?, name = ?, rtmp_url = ?, stream_key = ?, enabled = ? WHERE id = ?`,
+		e.Type, e.Name, e.RtmpURL, e.StreamKey, boolInt(e.Enabled), e.ID,
 	)
 	return err
 }
@@ -283,7 +300,7 @@ func (db *DB) videosForStream(streamID int64) ([]string, error) {
 
 func (db *DB) endpointsForStream(streamID int64) ([]Endpoint, error) {
 	rows, err := db.Query(`
-		SELECT e.id, e.name, e.rtmp_url, e.stream_key, e.enabled, e.created_at
+		SELECT e.id, e.endpoint_type, e.name, e.rtmp_url, e.stream_key, e.enabled, e.created_at
 		FROM endpoints e
 		JOIN stream_endpoints se ON se.endpoint_id = e.id
 		WHERE se.stream_id = ?
@@ -298,7 +315,7 @@ func (db *DB) endpointsForStream(streamID int64) ([]Endpoint, error) {
 	for rows.Next() {
 		var e Endpoint
 		var enabled int
-		if err := rows.Scan(&e.ID, &e.Name, &e.RtmpURL, &e.StreamKey, &enabled, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.Name, &e.RtmpURL, &e.StreamKey, &enabled, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		e.Enabled = enabled == 1

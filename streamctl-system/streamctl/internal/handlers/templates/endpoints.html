@@ -20,12 +20,20 @@
 		<input type="text" name="name" placeholder="YouTube" required>
 	</div>
 	<div class="field">
-		<label>RTMP URL (without stream key)</label>
-		<input type="text" name="rtmp_url" placeholder="rtmp://a.rtmp.youtube.com/live2" required>
+		<label>Type</label>
+		<select name="endpoint_type">
+			<option value="rtmp">RTMP</option>
+			<option value="youtube_hls">YouTube HLS</option>
+		</select>
+	</div>
+	<div class="field">
+		<label>URL</label>
+		<input type="text" name="rtmp_url" placeholder="rtmp://a.rtmp.youtube.com/live2 or https://a.upload.youtube.com/http_upload_hls?...&file=" required>
 	</div>
 	<div class="field">
 		<label>Stream key</label>
-		<input type="password" name="stream_key" required>
+		<input type="password" name="stream_key">
+		<div class="hint">For YouTube HLS, leave stream key blank and paste the full HLS upload URL ending in <code>file=</code>.</div>
 	</div>
 	<button type="submit" class="btn btn-primary">Add</button>
 </form>
@@ -35,7 +43,8 @@
 	<thead>
 		<tr>
 			<th>Name</th>
-			<th>RTMP URL</th>
+			<th>Type</th>
+			<th>URL</th>
 			<th>Status</th>
 			<th></th>
 		</tr>
@@ -47,6 +56,12 @@
 				<form method="post" action="/endpoints/update/{{.ID}}" id="ep-{{.ID}}" style="background: none; border: none; padding: 0; display: contents;">
 					<input type="text" name="name" value="{{.Name}}" form="ep-{{.ID}}" style="background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px;">
 				</form>
+			</td>
+			<td>
+				<select name="endpoint_type" form="ep-{{.ID}}" style="background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px;">
+					<option value="rtmp" {{if eq .Type "rtmp"}}selected{{end}}>RTMP</option>
+					<option value="youtube_hls" {{if eq .Type "youtube_hls"}}selected{{end}}>YouTube HLS</option>
+				</select>
 			</td>
 			<td>
 				<input type="text" name="rtmp_url" value="{{.RtmpURL}}" form="ep-{{.ID}}" style="width: 100%; background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px;">
@@ -61,9 +76,11 @@
 			<td>
 				<div class="actions">
 					<button type="submit" class="btn" form="ep-{{.ID}}">Save</button>
+					{{if eq .Type "rtmp"}}
 					<form method="post" action="/endpoints/test/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Send an 8-second test pattern to {{.Name}}? It will appear briefly on your live destination.');">
 						<button type="submit" class="btn">Test</button>
 					</form>
+					{{end}}
 					<form method="post" action="/endpoints/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this endpoint? Streams using it will be updated.');">
 						<button type="submit" class="btn btn-danger">Delete</button>
 					</form>

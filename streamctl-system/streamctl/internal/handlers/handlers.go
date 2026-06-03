@@ -433,6 +433,40 @@ func endpointIDs(endpoints []db.Endpoint) []int64 {
 	return ids
 }
 
+func normalizeEndpointType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "youtube_hls":
+		return "youtube_hls"
+	default:
+		return "rtmp"
+	}
+}
+
+func validateEndpoint(e *db.Endpoint, creating bool) error {
+	if e.Name == "" {
+		return fmt.Errorf("name required")
+	}
+	if e.RtmpURL == "" {
+		if e.Type == "youtube_hls" {
+			return fmt.Errorf("YouTube HLS URL required")
+		}
+		return fmt.Errorf("RTMP URL required")
+	}
+	switch e.Type {
+	case "rtmp":
+		if e.StreamKey == "" {
+			return fmt.Errorf("stream key required")
+		}
+	case "youtube_hls":
+		if !strings.Contains(e.RtmpURL, "file=") {
+			return fmt.Errorf("YouTube HLS URL must include file=")
+		}
+	default:
+		return fmt.Errorf("unsupported endpoint type: %s", e.Type)
+	}
+	return nil
+}
+
 type spacesEntry struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
@@ -549,13 +583,14 @@ func (h *Handler) endpointCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e := &db.Endpoint{
+		Type:      normalizeEndpointType(r.FormValue("endpoint_type")),
 		Name:      strings.TrimSpace(r.FormValue("name")),
 		RtmpURL:   strings.TrimSpace(r.FormValue("rtmp_url")),
 		StreamKey: strings.TrimSpace(r.FormValue("stream_key")),
 		Enabled:   true,
 	}
-	if e.Name == "" || e.RtmpURL == "" || e.StreamKey == "" {
-		http.Error(w, "name, rtmp_url, stream_key required", http.StatusBadRequest)
+	if err := validateEndpoint(e, true); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if _, err := h.DB.CreateEndpoint(e); err != nil {
@@ -580,12 +615,20 @@ func (h *Handler) endpointUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	existing.Type = normalizeEndpointType(r.FormValue("endpoint_type"))
 	existing.Name = strings.TrimSpace(r.FormValue("name"))
 	existing.RtmpURL = strings.TrimSpace(r.FormValue("rtmp_url"))
 	if k := strings.TrimSpace(r.FormValue("stream_key")); k != "" {
 		existing.StreamKey = k
 	}
+	if existing.Type == "youtube_hls" {
+		existing.StreamKey = ""
+	}
 	existing.Enabled = r.FormValue("enabled") == "on"
+	if err := validateEndpoint(existing, false); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := h.DB.UpdateEndpoint(existing); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -611,6 +654,10 @@ func (h *Handler) endpointTest(w http.ResponseWriter, r *http.Request) {
 	e, err := h.DB.GetEndpoint(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if e.Type != "rtmp" {
+		http.Error(w, "test broadcast is only supported for RTMP endpoints", http.StatusBadRequest)
 		return
 	}
 
