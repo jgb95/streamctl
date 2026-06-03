@@ -149,30 +149,9 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) streamNew(w http.ResponseWriter, r *http.Request) {
-	files, err := h.listVideos()
-	if err != nil {
+	if err := h.renderStreamForm(w, http.StatusOK, "New stream", "/streams/create", nil, nil, "", ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	endpoints, err := h.DB.ListEndpoints()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	allIDs := make([]int64, len(endpoints))
-	for i, e := range endpoints {
-		allIDs[i] = e.ID
-	}
-	h.render(w, "stream_form.html", map[string]any{
-		"Videos":          files,
-		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
-		"Endpoints":       endpoints,
-		"SelectedIDs":     allIDs, // default = all
-		"FormAction":      "/streams/create",
-		"Title":           "New stream",
-		"DefaultSchedule": "once",
-		"RemoteBrowse":    strings.TrimSpace(h.Remote) != "",
-	})
 }
 
 func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
@@ -182,12 +161,18 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s, ids, videos, err := h.streamFromForm(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		draft := h.streamDraftFromForm(r)
+		if renderErr := h.renderStreamForm(w, http.StatusBadRequest, "New stream", "/streams/create", draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
+			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	id, err := h.DB.CreateStream(s, ids, videos)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Videos = videos
+		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "New stream", "/streams/create", s, ids, s.ScheduleType, err.Error()); renderErr != nil {
+			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	created, err := h.DB.GetStream(id)
@@ -196,7 +181,9 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Systemd.Sync(created); err != nil {
-		http.Error(w, "stream saved but systemd sync failed: "+err.Error(), http.StatusInternalServerError)
+		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", created.ID), created, endpointIDs(created.Endpoints), created.ScheduleType, "stream saved but systemd sync failed: "+err.Error()); renderErr != nil {
+			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -213,31 +200,13 @@ func (h *Handler) streamEdit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	files, err := h.listVideos()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	endpoints, err := h.DB.ListEndpoints()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	selected := make([]int64, len(s.Endpoints))
 	for i, e := range s.Endpoints {
 		selected[i] = e.ID
 	}
-	h.render(w, "stream_form.html", map[string]any{
-		"Stream":          s,
-		"Videos":          files,
-		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
-		"Endpoints":       endpoints,
-		"SelectedIDs":     selected,
-		"FormAction":      fmt.Sprintf("/streams/update/%d", s.ID),
-		"Title":           "Edit stream",
-		"DefaultSchedule": s.ScheduleType,
-		"RemoteBrowse":    strings.TrimSpace(h.Remote) != "",
-	})
+	if err := h.renderStreamForm(w, http.StatusOK, "Edit stream", fmt.Sprintf("/streams/update/%d", s.ID), s, selected, s.ScheduleType, ""); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
@@ -252,12 +221,19 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s, ids, videos, err := h.streamFromForm(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		draft := h.streamDraftFromForm(r)
+		draft.ID = id
+		if renderErr := h.renderStreamForm(w, http.StatusBadRequest, "Edit stream", fmt.Sprintf("/streams/update/%d", id), draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
+			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	s.ID = id
 	if err := h.DB.UpdateStream(s, ids, videos); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Videos = videos
+		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", id), s, ids, s.ScheduleType, err.Error()); renderErr != nil {
+			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	updated, err := h.DB.GetStream(id)
@@ -266,7 +242,9 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Systemd.Sync(updated); err != nil {
-		http.Error(w, "stream saved but systemd sync failed: "+err.Error(), http.StatusInternalServerError)
+		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", id), updated, endpointIDs(updated.Endpoints), updated.ScheduleType, "stream saved but systemd sync failed: "+err.Error()); renderErr != nil {
+			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -335,6 +313,82 @@ func (h *Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
 		"Stream": s,
 		"Units":  h.Systemd.Logs(id),
 	})
+}
+
+func (h *Handler) renderStreamForm(w http.ResponseWriter, status int, title, action string, s *db.Stream, selected []int64, defaultSchedule, errorMessage string) error {
+	files, err := h.listVideos()
+	if err != nil {
+		return err
+	}
+	endpoints, err := h.DB.ListEndpoints()
+	if err != nil {
+		return err
+	}
+	if selected == nil {
+		selected = make([]int64, len(endpoints))
+		for i, e := range endpoints {
+			selected[i] = e.ID
+		}
+	}
+	if defaultSchedule == "" {
+		defaultSchedule = "once"
+		if s != nil && s.ScheduleType != "" {
+			defaultSchedule = s.ScheduleType
+		}
+	}
+	h.renderStatus(w, status, "stream_form.html", map[string]any{
+		"Stream":          s,
+		"Videos":          files,
+		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
+		"Endpoints":       endpoints,
+		"SelectedIDs":     selected,
+		"FormAction":      action,
+		"Title":           title,
+		"DefaultSchedule": defaultSchedule,
+		"RemoteBrowse":    strings.TrimSpace(h.Remote) != "",
+		"Error":           errorMessage,
+	})
+	return nil
+}
+
+func (h *Handler) streamDraftFromForm(r *http.Request) *db.Stream {
+	var videos []string
+	for _, v := range r.Form["video_file"] {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			videos = append(videos, v)
+		}
+	}
+	scheduleType := r.FormValue("schedule_type")
+	if scheduleType == "" {
+		scheduleType = "once"
+	}
+	return &db.Stream{
+		Name:         strings.TrimSpace(r.FormValue("name")),
+		Videos:       videos,
+		ScheduleType: scheduleType,
+		OnCalendar:   strings.TrimSpace(r.FormValue("on_calendar")),
+		Enabled:      r.FormValue("enabled") == "on",
+	}
+}
+
+func selectedEndpointIDsFromForm(r *http.Request) []int64 {
+	var ids []int64
+	for _, v := range r.Form["endpoint_ids"] {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func endpointIDs(endpoints []db.Endpoint) []int64 {
+	ids := make([]int64, len(endpoints))
+	for i, e := range endpoints {
+		ids[i] = e.ID
+	}
+	return ids
 }
 
 type spacesEntry struct {
@@ -828,6 +882,10 @@ func (h *Handler) listVideos() ([]string, error) {
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
+	h.renderStatus(w, http.StatusOK, name, data)
+}
+
+func (h *Handler) renderStatus(w http.ResponseWriter, status int, name string, data any) {
 	tmpls, err := fs.Sub(templateFS, "templates")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -839,6 +897,7 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

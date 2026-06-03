@@ -2,6 +2,8 @@
 {{define "content"}}
 <h2>{{.Title}}</h2>
 
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
 <form method="post" action="{{.FormAction}}">
 	<div class="field">
 		<label>Name</label>
@@ -23,7 +25,7 @@
 				{{end}}
 			{{else}}
 				<li class="clip-row">
-					<input type="text" name="video_file" value="{{if .Videos}}{{index .Videos 0}}{{end}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
+					<input type="text" name="video_file" value="{{if and (not .Stream) .Videos}}{{index .Videos 0}}{{end}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
 					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
