@@ -20,6 +20,7 @@ type Manager struct {
 	RunUser      string
 	VideoDir     string
 	CacheDir     string
+	HLSDir       string
 	Remote       string // rclone remote, e.g. spaces:bucket
 	RcloneConfig string
 	NotifyEmail  string
@@ -91,8 +92,20 @@ func (m *Manager) cleanupScriptPath(streamID int64) string {
 	return filepath.Join(m.UnitDir, m.cleanupScriptName(streamID))
 }
 
+func (m *Manager) hlsPath(streamID int64) string {
+	return filepath.Join(m.HLSDir, fmt.Sprintf("stream-%d", streamID))
+}
+
+func (m *Manager) hlsPlaylistPath(streamID int64) string {
+	return filepath.Join(m.hlsPath(streamID), "index.m3u8")
+}
+
+func (m *Manager) hlsSegmentPath(streamID int64) string {
+	return filepath.Join(m.hlsPath(streamID), "segment-%06d.ts")
+}
+
 // Sync writes (or removes) the unit files for a single stream and reloads systemd.
-// If the stream is disabled or has no endpoints, units are removed.
+// If the stream is disabled or has no clips, units are removed.
 func (m *Manager) Sync(s *db.Stream) error {
 	svcPath := filepath.Join(m.UnitDir, m.serviceName(s.ID))
 	prefetchPath := filepath.Join(m.UnitDir, m.prefetchName(s.ID))
@@ -103,8 +116,8 @@ func (m *Manager) Sync(s *db.Stream) error {
 	probeScriptPath := m.probeScriptPath(s.ID)
 	cleanupScriptPath := m.cleanupScriptPath(s.ID)
 
-	// Disabled, no endpoints, or no clips → remove and stop.
-	if !s.Enabled || len(enabledEndpoints(s.Endpoints)) == 0 || len(s.Videos) == 0 {
+	// Disabled or no clips -> remove and stop.
+	if !s.Enabled || len(s.Videos) == 0 {
 		return m.removeUnits(s.ID, svcPath, prefetchPath, timerPath, plistPath, runScriptPath, prefetchScriptPath, probeScriptPath, cleanupScriptPath)
 	}
 
@@ -366,6 +379,7 @@ PrivateTmp=true
 PrivateDevices=true
 ReadOnlyPaths=%s
 ReadWritePaths=%s
+ReadWritePaths=%s
 `,
 		shellEscape(s.Name),
 		afterPrefetch,
@@ -375,6 +389,7 @@ ReadWritePaths=%s
 		systemdQuote(m.runScriptPath(s.ID)),
 		m.VideoDir,
 		m.CacheDir,
+		m.HLSDir,
 	)
 }
 
@@ -494,15 +509,37 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
 	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
+	b.WriteString("/run/current-system/sw/bin/mkdir -p ")
+	b.WriteString(shellQuote(m.hlsPath(s.ID)))
+	b.WriteString("\n")
+	b.WriteString("/run/current-system/sw/bin/rm -f -- ")
+	b.WriteString(shellQuote(m.hlsPlaylistPath(s.ID)))
+	b.WriteString("\n")
+	b.WriteString("/run/current-system/sw/bin/find ")
+	b.WriteString(shellQuote(m.hlsPath(s.ID)))
+	b.WriteString(" -maxdepth 1 -type f -name 'segment-*.ts' -delete\n")
 	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i ")
 	b.WriteString(shellQuote(m.playlistPath(s.ID)))
 	b.WriteString(" -c copy -tag:v 7 -tag:a 10 -f tee -map 0:v -map 0:a ")
-	b.WriteString(shellQuote(buildTeeArg(s.Endpoints)))
+	b.WriteString(shellQuote(m.buildTeeArg(s)))
 	b.WriteString("\n")
 	if m.CleanupCache && m.needsPrefetch(s) {
 		b.WriteString(m.renderCleanupScriptBody(s))
 	}
 	return b.String()
+}
+
+func (m *Manager) buildTeeArg(s *db.Stream) string {
+	parts := buildTeeArg(s.Endpoints)
+	if parts != "" {
+		parts += "|"
+	}
+	parts += fmt.Sprintf(
+		"[f=hls:hls_time=4:hls_list_size=8:hls_flags=delete_segments+omit_endlist:hls_segment_filename=%s]%s",
+		m.hlsSegmentPath(s.ID),
+		m.hlsPlaylistPath(s.ID),
+	)
+	return parts
 }
 
 func (m *Manager) renderNotifyFunction(s *db.Stream) string {

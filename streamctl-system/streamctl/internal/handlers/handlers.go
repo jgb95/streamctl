@@ -33,6 +33,7 @@ type Handler struct {
 	Secret       string
 	VideoDir     string
 	CacheDir     string
+	HLSDir       string
 	Remote       string
 	RcloneConfig string
 	Systemd      *systemd.Manager
@@ -55,6 +56,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("/login", h.login)
 	mux.HandleFunc("/logout", h.logout)
+	mux.Handle("/live/", http.StripPrefix("/live/", http.HandlerFunc(h.liveFile)))
 
 	mux.Handle("/", h.auth(http.HandlerFunc(h.index)))
 	mux.Handle("/streams/new", h.auth(http.HandlerFunc(h.streamNew)))
@@ -123,6 +125,33 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// liveFile serves generated HLS playlists and segments publicly. Nostr live
+// activity events can point clients at these /live/... URLs.
+func (h *Handler) liveFile(w http.ResponseWriter, r *http.Request) {
+	clean := path.Clean("/" + r.URL.Path)
+	if clean == "/" || strings.Contains(clean, "/../") {
+		http.NotFound(w, r)
+		return
+	}
+	rel := strings.TrimPrefix(clean, "/")
+	full := filepath.Join(h.HLSDir, rel)
+	if !strings.HasPrefix(full, filepath.Clean(h.HLSDir)+string(os.PathSeparator)) {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch strings.ToLower(filepath.Ext(full)) {
+	case ".m3u8":
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	case ".ts":
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Cache-Control", "public, max-age=30")
+	}
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	http.ServeFile(w, r, full)
+}
+
 // ---------- streams ----------
 
 type streamView struct {
@@ -130,6 +159,7 @@ type streamView struct {
 	Status          string
 	NextTrigger     string
 	NextTriggerUnix int64
+	LiveURL         string
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +175,7 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 			Status:          h.Systemd.Status(s.ID),
 			NextTrigger:     h.Systemd.NextTrigger(s.ID),
 			NextTriggerUnix: h.Systemd.NextTriggerUnix(s.ID),
+			LiveURL:         fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID),
 		}
 	}
 	h.render(w, "streams.html", map[string]any{"Streams": views})

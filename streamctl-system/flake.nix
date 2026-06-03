@@ -60,6 +60,12 @@
               description = "Directory where remote video files are prefetched before streaming.";
             };
 
+            hlsDir = lib.mkOption {
+              type = lib.types.str;
+              default = "/var/lib/streamctl/hls";
+              description = "Directory where generated HLS playlists and segments are written.";
+            };
+
             remote = lib.mkOption {
               type = lib.types.str;
               default = "";
@@ -131,6 +137,7 @@
               "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.videoDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.cacheDir} 0750 ${cfg.user} ${cfg.group} - -"
+              "d ${cfg.hlsDir} 0750 ${cfg.user} ${cfg.group} - -"
             ];
 
             systemd.services.streamctl = {
@@ -152,6 +159,7 @@
                     -db=${cfg.dataDir}/streamctl.db \
                     -video-dir=${cfg.videoDir} \
                     -cache-dir=${cfg.cacheDir} \
+                    -hls-dir=${cfg.hlsDir} \
                     -remote=${cfg.remote} \
                     -rclone-config=${cfg.rcloneConfigFile} \
                     -notify-email=${cfg.notificationEmail} \

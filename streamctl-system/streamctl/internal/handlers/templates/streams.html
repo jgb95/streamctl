@@ -16,6 +16,7 @@
 			<th>Status</th>
 			<th>Next run</th>
 			<th>Countdown</th>
+			<th>HLS</th>
 			<th></th>
 		</tr>
 	</thead>
@@ -55,6 +56,7 @@
 				<span class="muted" style="font-size: 12px;">-</span>
 				{{end}}
 			</td>
+			<td><a href="{{.LiveURL}}" class="btn">Playlist</a></td>
 			<td>
 				<div class="actions">
 					{{if eq .Status "active"}}

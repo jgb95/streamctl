@@ -17,6 +17,7 @@ func main() {
 		dbPath       = flag.String("db", "/var/lib/streamctl/streamctl.db", "path to SQLite database")
 		videoDir     = flag.String("video-dir", "/var/lib/streamctl/videos", "directory containing video files")
 		cacheDir     = flag.String("cache-dir", "/var/lib/streamctl/cache", "directory for prefetched remote video files")
+		hlsDir       = flag.String("hls-dir", "/var/lib/streamctl/hls", "directory for generated HLS playlists and segments")
 		remote       = flag.String("remote", "", "rclone remote for Spaces objects, e.g. spaces:bucket")
 		rcloneCfg    = flag.String("rclone-config", "", "path to rclone config file for generated prefetch services")
 		notifyEmail  = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
@@ -49,6 +50,7 @@ func main() {
 		RunUser:      *runUser,
 		VideoDir:     *videoDir,
 		CacheDir:     *cacheDir,
+		HLSDir:       *hlsDir,
 		Remote:       *remote,
 		RcloneConfig: *rcloneCfg,
 		NotifyEmail:  *notifyEmail,
@@ -72,6 +74,7 @@ func main() {
 		Secret:       secret,
 		VideoDir:     *videoDir,
 		CacheDir:     *cacheDir,
+		HLSDir:       *hlsDir,
 		Remote:       *remote,
 		RcloneConfig: *rcloneCfg,
 		Systemd:      sysd,
