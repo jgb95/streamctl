@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -28,11 +29,13 @@ import (
 var templateFS embed.FS
 
 type Handler struct {
-	DB       *db.DB
-	Secret   string
-	VideoDir string
-	CacheDir string
-	Systemd  *systemd.Manager
+	DB           *db.DB
+	Secret       string
+	VideoDir     string
+	CacheDir     string
+	Remote       string
+	RcloneConfig string
+	Systemd      *systemd.Manager
 
 	funcs template.FuncMap
 }
@@ -61,6 +64,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/delete/", h.auth(http.HandlerFunc(h.streamDelete)))
 	mux.Handle("/streams/start/", h.auth(http.HandlerFunc(h.streamStart)))
 	mux.Handle("/streams/stop/", h.auth(http.HandlerFunc(h.streamStop)))
+	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
+	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
 
 	mux.Handle("/endpoints", h.auth(http.HandlerFunc(h.endpoints)))
 	mux.Handle("/endpoints/create", h.auth(http.HandlerFunc(h.endpointCreate)))
@@ -166,6 +171,7 @@ func (h *Handler) streamNew(w http.ResponseWriter, r *http.Request) {
 		"FormAction":      "/streams/create",
 		"Title":           "New stream",
 		"DefaultSchedule": "once",
+		"RemoteBrowse":    strings.TrimSpace(h.Remote) != "",
 	})
 }
 
@@ -230,6 +236,7 @@ func (h *Handler) streamEdit(w http.ResponseWriter, r *http.Request) {
 		"FormAction":      fmt.Sprintf("/streams/update/%d", s.ID),
 		"Title":           "Edit stream",
 		"DefaultSchedule": s.ScheduleType,
+		"RemoteBrowse":    strings.TrimSpace(h.Remote) != "",
 	})
 }
 
@@ -311,6 +318,62 @@ func (h *Handler) streamStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (h *Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/streams/logs/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	s, err := h.DB.GetStream(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	h.render(w, "stream_logs.html", map[string]any{
+		"Stream": s,
+		"Units":  h.Systemd.Logs(id),
+	})
+}
+
+type spacesEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type spacesBrowseResponse struct {
+	Prefix string        `json:"prefix"`
+	Dirs   []spacesEntry `json:"dirs"`
+	Files  []spacesEntry `json:"files"`
+}
+
+func (h *Handler) spacesBrowse(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.Remote) == "" {
+		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
+		return
+	}
+
+	prefix, err := cleanSpacesPrefix(r.URL.Query().Get("prefix"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var resp spacesBrowseResponse
+	resp.Prefix = prefix
+	if prefix == "" {
+		resp.Dirs, err = h.listSpacesConferences(r.Context())
+	} else {
+		resp.Dirs, resp.Files, err = h.listSpacesPrefix(r.Context(), prefix)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string, error) {
@@ -538,6 +601,94 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 	return nil
 }
 
+func (h *Handler) listSpacesConferences(ctx context.Context) ([]spacesEntry, error) {
+	lines, err := h.rcloneLsf(ctx, "", "--dirs-only")
+	if err != nil {
+		return nil, err
+	}
+	var dirs []spacesEntry
+	for _, line := range lines {
+		name := strings.Trim(strings.TrimSpace(line), "/")
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		dirs = append(dirs, spacesEntry{
+			Name: name,
+			Path: name + "/recordings/",
+		})
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
+	})
+	return dirs, nil
+}
+
+func (h *Handler) listSpacesPrefix(ctx context.Context, prefix string) ([]spacesEntry, []spacesEntry, error) {
+	lines, err := h.rcloneLsf(ctx, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	var dirs []spacesEntry
+	var files []spacesEntry
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name := strings.Trim(line, "/")
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		if strings.HasSuffix(line, "/") {
+			dirs = append(dirs, spacesEntry{Name: name, Path: prefix + name + "/"})
+			continue
+		}
+		if isVideoFile(name) {
+			files = append(files, spacesEntry{Name: name, Path: prefix + name})
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+	})
+	return dirs, files, nil
+}
+
+func (h *Handler) rcloneLsf(ctx context.Context, prefix string, extraArgs ...string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	args := []string{"lsf", h.remotePath(prefix)}
+	args = append(args, extraArgs...)
+	cmd := exec.CommandContext(ctx, "rclone", args...)
+	if strings.TrimSpace(h.RcloneConfig) != "" {
+		cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+h.RcloneConfig)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("rclone lsf %s: %s", prefix, msg)
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return nil, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
+func (h *Handler) remotePath(prefix string) string {
+	remote := strings.TrimRight(strings.TrimSpace(h.Remote), "/")
+	if strings.HasSuffix(remote, ":") || prefix == "" {
+		return remote + prefix
+	}
+	return remote + "/" + prefix
+}
+
 // ---------- helpers ----------
 
 // bitratesJSON probes each file for its container bitrate and returns a JSON
@@ -589,6 +740,37 @@ func (h *Handler) localClipPath(source string) string {
 
 func isRemoteClip(source string) bool {
 	return strings.Contains(source, "/")
+}
+
+func cleanSpacesPrefix(prefix string) (string, error) {
+	prefix = strings.TrimSpace(strings.ReplaceAll(prefix, "\\", "/"))
+	prefix = strings.Trim(prefix, "/")
+	if prefix == "" {
+		return "", nil
+	}
+	clean := path.Clean(prefix)
+	if clean == "." {
+		return "", nil
+	}
+	parts := strings.Split(clean, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("bad Spaces prefix: %q", prefix)
+		}
+	}
+	if len(parts) < 2 || parts[1] != "recordings" {
+		return "", fmt.Errorf("Spaces prefix must be inside <conference>/recordings")
+	}
+	return clean + "/", nil
+}
+
+func isVideoFile(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".mp4", ".mov", ".mkv", ".flv", ".ts":
+		return true
+	default:
+		return false
+	}
 }
 
 func cleanClipSource(source string) (string, error) {

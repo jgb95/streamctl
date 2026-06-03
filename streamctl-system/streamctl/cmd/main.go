@@ -68,11 +68,13 @@ func main() {
 	}
 
 	h := &handlers.Handler{
-		DB:       database,
-		Secret:   secret,
-		VideoDir: *videoDir,
-		CacheDir: *cacheDir,
-		Systemd:  sysd,
+		DB:           database,
+		Secret:       secret,
+		VideoDir:     *videoDir,
+		CacheDir:     *cacheDir,
+		Remote:       *remote,
+		RcloneConfig: *rcloneCfg,
+		Systemd:      sysd,
 	}
 
 	mux := http.NewServeMux()

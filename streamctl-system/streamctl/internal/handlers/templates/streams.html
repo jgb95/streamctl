@@ -56,6 +56,7 @@
 						<button type="submit" class="btn">Start now</button>
 					</form>
 					{{end}}
+					<a href="/streams/logs/{{.ID}}" class="btn">Logs</a>
 					<a href="/streams/edit/{{.ID}}" class="btn">Edit</a>
 					<form method="post" action="/streams/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this stream?');">
 						<button type="submit" class="btn btn-danger">Delete</button>

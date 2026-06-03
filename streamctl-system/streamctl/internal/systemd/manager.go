@@ -25,6 +25,18 @@ type Manager struct {
 	CleanupCache bool
 }
 
+type UnitLog struct {
+	Label       string
+	UnitName    string
+	LoadedState string
+	ActiveState string
+	SubState    string
+	Result      string
+	Since       string
+	Journal     string
+	Error       string
+}
+
 func (m *Manager) serviceName(streamID int64) string {
 	return fmt.Sprintf("%sstream-%d.service", m.UnitPrefix, streamID)
 }
@@ -201,6 +213,77 @@ func (m *Manager) Start(s *db.Stream) error {
 // Stop terminates a running stream.
 func (m *Manager) Stop(streamID int64) error {
 	return systemctl("stop", m.serviceName(streamID))
+}
+
+func (m *Manager) Logs(streamID int64) []UnitLog {
+	units := []UnitLog{
+		{Label: "Timer", UnitName: m.timerName(streamID)},
+		{Label: "Prefetch", UnitName: m.prefetchName(streamID)},
+		{Label: "Stream", UnitName: m.serviceName(streamID)},
+	}
+	for i := range units {
+		unit := &units[i]
+		if err := m.populateUnitState(unit); err != nil {
+			unit.Error = appendError(unit.Error, err)
+		}
+		if err := m.populateUnitJournal(unit); err != nil {
+			unit.Error = appendError(unit.Error, err)
+		}
+	}
+	return units
+}
+
+func (m *Manager) populateUnitState(unit *UnitLog) error {
+	out, err := exec.Command(
+		"systemctl",
+		"show",
+		unit.UnitName,
+		"--property=LoadedState",
+		"--property=ActiveState",
+		"--property=SubState",
+		"--property=Result",
+		"--property=ActiveEnterTimestamp",
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl show: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "LoadedState":
+			unit.LoadedState = val
+		case "ActiveState":
+			unit.ActiveState = val
+		case "SubState":
+			unit.SubState = val
+		case "Result":
+			unit.Result = val
+		case "ActiveEnterTimestamp":
+			unit.Since = val
+		}
+	}
+	return nil
+}
+
+func (m *Manager) populateUnitJournal(unit *UnitLog) error {
+	out, err := exec.Command(
+		"journalctl",
+		"-u", unit.UnitName,
+		"--no-pager",
+		"--output=short-iso",
+		"-n", "200",
+	).CombinedOutput()
+	unit.Journal = strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("journalctl: %w: %s", err, unit.Journal)
+	}
+	if unit.Journal == "" {
+		unit.Journal = "No journal entries found."
+	}
+	return nil
 }
 
 // ---------- Unit rendering ----------
@@ -487,6 +570,17 @@ func writeFile(path, contents string) error {
 
 func writeFileMode(path, contents string, mode os.FileMode) error {
 	return os.WriteFile(path, []byte(contents), mode)
+}
+
+func appendError(existing string, err error) string {
+	if err == nil {
+		return existing
+	}
+	msg := strings.TrimSpace(err.Error())
+	if existing == "" {
+		return msg
+	}
+	return existing + "\n" + msg
 }
 
 // shellQuote wraps a value in single quotes for safe inclusion in an ExecStart line.

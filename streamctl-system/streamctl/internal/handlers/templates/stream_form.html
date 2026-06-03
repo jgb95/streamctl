@@ -42,6 +42,9 @@
 			</li>
 		</template>
 		<button type="button" class="btn" onclick="addClip()">+ Add clip</button>
+		{{if .RemoteBrowse}}
+		<button type="button" class="btn" onclick="toggleSpacesBrowser()">Browse Spaces</button>
+		{{end}}
 		<div class="hint">
 			Clips play back-to-back as a single uninterrupted stream.
 			All clips must share codec, resolution, frame rate, pixel format, and audio params — verified with ffprobe on save.
@@ -66,8 +69,21 @@
 			</li>
 		</template>
 		<button type="button" class="btn" onclick="addClip()">+ Add clip</button>
+		{{if .RemoteBrowse}}
+		<button type="button" class="btn" onclick="toggleSpacesBrowser()">Browse Spaces</button>
+		{{end}}
 		<div class="hint">
 			Use Spaces object paths relative to the configured remote. Clips are prefetched to local cache before streaming.
+		</div>
+		{{end}}
+		{{if .RemoteBrowse}}
+		<div id="spaces-browser" class="browser-panel" hidden>
+			<div class="browser-toolbar">
+				<button type="button" class="btn" id="spaces-up" onclick="browseSpacesUp()">Up</button>
+				<button type="button" class="btn" onclick="browseSpaces('')">Conferences</button>
+				<span id="spaces-path" class="browser-path"></span>
+			</div>
+			<div id="spaces-list" class="browser-list"></div>
 		</div>
 		{{end}}
 	</div>
@@ -125,6 +141,7 @@
 
 <script>
 const VIDEO_BPS = {{.BitratesJSON}};
+let spacesPrefix = '';
 
 function addClip() {
 	const tpl = document.getElementById('clip-template');
@@ -163,6 +180,95 @@ function updateBandwidth() {
 	const peakMbps = (peakBps / 1e6).toFixed(1);
 	const totalMbps = (total / 1e6).toFixed(1);
 	out.textContent = `Estimated peak upload: ${totalMbps} Mbps (${peakMbps} Mbps × ${epCount} endpoint${epCount === 1 ? '' : 's'})`;
+}
+
+function toggleSpacesBrowser() {
+	const panel = document.getElementById('spaces-browser');
+	if (!panel) return;
+	panel.hidden = !panel.hidden;
+	if (!panel.hidden) browseSpaces(spacesPrefix || '');
+}
+
+async function browseSpaces(prefix) {
+	const panel = document.getElementById('spaces-browser');
+	const list = document.getElementById('spaces-list');
+	const pathLabel = document.getElementById('spaces-path');
+	const up = document.getElementById('spaces-up');
+	if (!panel || !list || !pathLabel || !up) return;
+	panel.hidden = false;
+	spacesPrefix = prefix || '';
+	pathLabel.textContent = spacesPrefix || 'Conferences';
+	up.disabled = !spacesPrefix;
+	list.innerHTML = '<div class="browser-row"><span class="browser-kind">Load</span><span class="browser-name">Loading...</span></div>';
+	try {
+		const res = await fetch('/spaces/browse?prefix=' + encodeURIComponent(spacesPrefix));
+		if (!res.ok) throw new Error(await res.text());
+		const data = await res.json();
+		spacesPrefix = data.prefix || '';
+		pathLabel.textContent = spacesPrefix || 'Conferences';
+		up.disabled = !spacesPrefix;
+		renderSpacesEntries(data.dirs || [], data.files || []);
+	} catch (err) {
+		list.innerHTML = '';
+		const row = document.createElement('div');
+		row.className = 'inline-error';
+		row.textContent = err.message || String(err);
+		list.appendChild(row);
+	}
+}
+
+function renderSpacesEntries(dirs, files) {
+	const list = document.getElementById('spaces-list');
+	if (!list) return;
+	list.innerHTML = '';
+	for (const dir of dirs) {
+		const row = browserRow('Dir', dir.name, () => browseSpaces(dir.path));
+		list.appendChild(row);
+	}
+	for (const file of files) {
+		const row = browserRow('File', file.name, () => selectSpacesFile(file.path));
+		list.appendChild(row);
+	}
+	if (!dirs.length && !files.length) {
+		const empty = document.createElement('div');
+		empty.className = 'browser-row';
+		empty.innerHTML = '<span class="browser-kind">Empty</span><span class="browser-name">No video files or directories found.</span>';
+		list.appendChild(empty);
+	}
+}
+
+function browserRow(kind, name, onClick) {
+	const row = document.createElement('button');
+	row.type = 'button';
+	row.className = 'browser-row';
+	row.innerHTML = `<span class="browser-kind">${kind}</span><span class="browser-name"></span>`;
+	row.querySelector('.browser-name').textContent = name;
+	row.addEventListener('click', onClick);
+	return row;
+}
+
+function browseSpacesUp() {
+	if (!spacesPrefix) return;
+	const parts = spacesPrefix.replace(/\/$/, '').split('/');
+	if (parts.length <= 2) {
+		browseSpaces('');
+		return;
+	}
+	parts.pop();
+	browseSpaces(parts.join('/') + '/');
+}
+
+function selectSpacesFile(path) {
+	let input = [...document.querySelectorAll('#clips input[name="video_file"]')]
+		.find(el => !el.value.trim());
+	if (!input) {
+		addClip();
+		const inputs = document.querySelectorAll('#clips input[name="video_file"]');
+		input = inputs[inputs.length - 1];
+	}
+	input.value = path;
+	input.focus();
+	updateBandwidth();
 }
 
 document.addEventListener('change', updateBandwidth);

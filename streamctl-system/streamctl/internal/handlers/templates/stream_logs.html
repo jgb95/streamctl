@@ -1,0 +1,29 @@
+{{define "stream_logs.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+	<div>
+		<h2 style="margin: 0;">Logs: {{.Stream.Name}}</h2>
+		<div class="muted" style="font-size: 12px;">{{.Stream.OnCalendar}} - {{.Stream.ScheduleType}}</div>
+	</div>
+	<a href="/" class="btn" style="margin-left: auto;">Back</a>
+	<a href="/streams/logs/{{.Stream.ID}}" class="btn">Refresh</a>
+</div>
+
+{{range .Units}}
+<section class="unit-log">
+	<header>
+		<h3>{{.Label}}</h3>
+		<code>{{.UnitName}}</code>
+	</header>
+	<div class="unit-meta">
+		<span>Loaded: {{if .LoadedState}}{{.LoadedState}}{{else}}unknown{{end}}</span>
+		<span>Active: {{if .ActiveState}}{{.ActiveState}}{{else}}unknown{{end}}</span>
+		<span>Sub: {{if .SubState}}{{.SubState}}{{else}}unknown{{end}}</span>
+		<span>Result: {{if .Result}}{{.Result}}{{else}}unknown{{end}}</span>
+		{{if .Since}}<span>Since: {{.Since}}</span>{{end}}
+	</div>
+	{{if .Error}}<div class="inline-error">{{.Error}}</div>{{end}}
+	<pre class="log-output">{{.Journal}}</pre>
+</section>
+{{end}}
+{{end}}
