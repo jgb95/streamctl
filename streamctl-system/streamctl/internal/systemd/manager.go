@@ -327,6 +327,7 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 	var b strings.Builder
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
+	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
 	if strings.TrimSpace(m.NotifyEmail) != "" {
 		b.WriteString(m.renderNotifyFunction(s))
 		b.WriteString("trap 'rc=$?; notify failure; exit $rc' ERR\n")
@@ -387,6 +388,7 @@ func (m *Manager) renderProbeScript(s *db.Stream) string {
 	var b strings.Builder
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
+	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
 	for _, v := range s.Videos {
 		local := m.localClipPath(v)
 		b.WriteString("/run/current-system/sw/bin/ffprobe -v error -show_streams ")
@@ -407,6 +409,7 @@ func (m *Manager) renderCleanupScript(s *db.Stream) string {
 	var b strings.Builder
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
+	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
 	for _, v := range s.Videos {
 		if !isRemoteClip(v) {
 			continue
