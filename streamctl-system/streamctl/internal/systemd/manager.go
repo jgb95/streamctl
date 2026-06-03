@@ -496,7 +496,7 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
 	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel warning -re -f concat -safe 0 -i ")
 	b.WriteString(shellQuote(m.playlistPath(s.ID)))
-	b.WriteString(" -c copy -f tee -map 0:v -map 0:a ")
+	b.WriteString(" -c copy -tag:v 7 -tag:a 10 -f tee -map 0:v -map 0:a ")
 	b.WriteString(shellQuote(buildTeeArg(s.Endpoints)))
 	b.WriteString("\n")
 	if m.CleanupCache && m.needsPrefetch(s) {
