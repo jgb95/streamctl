@@ -6,7 +6,7 @@
 </div>
 
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
-{{if .Started}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Started GPU processing for {{.Started}}</div>{{end}}
+{{if .Started}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Started GPU processing for {{.Started}}{{if .Job}} as <code>{{.Job}}</code>{{end}}</div>{{end}}
 
 <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
 	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">

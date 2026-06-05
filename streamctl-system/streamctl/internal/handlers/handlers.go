@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -837,6 +839,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"GPUWorkerHost": h.GPUWorkerHost,
 		"GPUWorker":     worker,
 		"Started":       r.URL.Query().Get("started"),
+		"Job":           r.URL.Query().Get("job"),
 		"Error":         r.URL.Query().Get("err"),
 	})
 }
@@ -862,19 +865,64 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	command := strings.TrimSpace(h.GPUWorkerCommand)
-	go func() {
-		cmd := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", host, command, rawPath)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("GPU transcode %s failed: %v: %s", rawPath, err, strings.TrimSpace(string(out)))
-			return
-		}
-		log.Printf("GPU transcode %s completed: %s", rawPath, strings.TrimSpace(string(out)))
-	}()
+	unitName, out, err := startRemoteGPUTranscode(r.Context(), host, command, rawPath)
+	if err != nil {
+		log.Printf("GPU transcode submit %s failed: %v: %s", rawPath, err, strings.TrimSpace(out))
+		http.Error(w, fmt.Sprintf("starting GPU job failed: %v\n%s", err, strings.TrimSpace(out)), http.StatusBadGateway)
+		return
+	}
+	log.Printf("GPU transcode %s submitted as %s: %s", rawPath, unitName, strings.TrimSpace(out))
 
 	q := url.Values{}
 	q.Set("started", rawPath)
+	q.Set("job", unitName)
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+}
+
+func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string) (string, string, error) {
+	unitName := gpuTranscodeUnitName(rawPath)
+	remote := strings.Join([]string{
+		"systemd-run",
+		"--unit=" + shellQuote(unitName),
+		"--description=" + shellQuote("streamctl GPU transcode "+rawPath),
+		"--collect",
+		"--property=" + shellQuote("Type=exec"),
+		"--property=" + shellQuote("WorkingDirectory=/root"),
+		"--property=" + shellQuote("Environment=RCLONE_CONFIG=/root/rclone.conf"),
+		"--",
+		shellQuote(command),
+		shellQuote(rawPath),
+	}, " ")
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", host, remote)
+	out, err := cmd.CombinedOutput()
+	return unitName, string(out), err
+}
+
+func gpuTranscodeUnitName(rawPath string) string {
+	sum := sha256.Sum256([]byte(rawPath))
+	hash := hex.EncodeToString(sum[:])[:12]
+	base := filepath.Base(rawPath)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	var safe strings.Builder
+	for _, r := range strings.ToLower(base) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			safe.WriteRune(r)
+		} else if safe.Len() == 0 || safe.String()[safe.Len()-1] != '-' {
+			safe.WriteByte('-')
+		}
+		if safe.Len() >= 36 {
+			break
+		}
+	}
+	name := strings.Trim(safe.String(), "-")
+	if name == "" {
+		name = "job"
+	}
+	return "streamctl-gpu-" + name + "-" + hash
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func (h *Handler) gpuWorkerConfigured() bool {
