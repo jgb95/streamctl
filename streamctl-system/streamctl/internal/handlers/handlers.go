@@ -91,6 +91,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
 	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
+	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
 
 	mux.Handle("/endpoints", h.auth(http.HandlerFunc(h.endpoints)))
 	mux.Handle("/endpoints/create", h.auth(http.HandlerFunc(h.endpointCreate)))
@@ -822,6 +823,26 @@ type gpuWorkerView struct {
 	Error      string
 }
 
+type gpuJobView struct {
+	UnitName    string
+	Description string
+	LoadedState string
+	ActiveState string
+	SubState    string
+	Result      string
+	Since       string
+	Journal     string
+	Error       string
+}
+
+type gpuStatusView struct {
+	Host      string
+	Available bool
+	NvidiaSMI string
+	Jobs      []gpuJobView
+	Error     string
+}
+
 func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(h.Remote) == "" {
 		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
@@ -833,11 +854,13 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	worker := h.gpuWorkerView(r.Context())
+	gpuStatus := h.gpuStatus(r.Context(), worker)
 	h.render(w, "livestream_files.html", map[string]any{
 		"Files":         files,
 		"GPUConfigured": worker.Configured,
 		"GPUWorkerHost": h.GPUWorkerHost,
 		"GPUWorker":     worker,
+		"GPUStatus":     gpuStatus,
 		"Started":       r.URL.Query().Get("started"),
 		"Job":           r.URL.Query().Get("job"),
 		"Error":         r.URL.Query().Get("err"),
@@ -879,6 +902,26 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
 }
 
+func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
+	unit := strings.TrimPrefix(r.URL.Path, "/gpu-worker/logs/")
+	if !validGPUUnitName(unit) {
+		http.NotFound(w, r)
+		return
+	}
+	host, err := h.gpuWorkerSSHHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	job := h.gpuJob(ctx, host, unit, true)
+	h.render(w, "gpu_job_logs.html", map[string]any{
+		"Job":  job,
+		"Host": host,
+	})
+}
+
 func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string) (string, string, error) {
 	unitName := gpuTranscodeUnitName(rawPath)
 	remote := strings.Join([]string{
@@ -896,6 +939,129 @@ func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string)
 	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", host, remote)
 	out, err := cmd.CombinedOutput()
 	return unitName, string(out), err
+}
+
+func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatusView {
+	status := gpuStatusView{}
+	if !worker.Configured {
+		return status
+	}
+	host := strings.TrimSpace(h.GPUWorkerHost)
+	if host == "" {
+		if worker.Status != "active" || worker.SSHHost == "" {
+			return status
+		}
+		host = worker.SSHHost
+	}
+	status.Host = host
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	nvidia, err := remoteSSH(ctx, host, "nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw --format=csv,noheader,nounits 2>/dev/null || true")
+	if err != nil {
+		status.Error = fmt.Sprintf("GPU status unavailable: %v: %s", err, strings.TrimSpace(nvidia))
+		return status
+	}
+	status.Available = true
+	status.NvidiaSMI = strings.TrimSpace(nvidia)
+	unitsOut, err := remoteSSH(ctx, host, "systemctl list-units 'streamctl-gpu-*' --all --no-legend --plain 2>/dev/null || true")
+	if err != nil {
+		status.Error = fmt.Sprintf("GPU jobs unavailable: %v: %s", err, strings.TrimSpace(unitsOut))
+		return status
+	}
+	for _, unit := range parseGPUUnitList(unitsOut) {
+		status.Jobs = append(status.Jobs, h.gpuJob(ctx, host, unit, false))
+		if len(status.Jobs) >= 10 {
+			break
+		}
+	}
+	return status
+}
+
+func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal bool) gpuJobView {
+	job := gpuJobView{UnitName: unit}
+	show, err := remoteSSH(ctx, host, "systemctl show "+shellQuote(unit)+" --property=Description --property=LoadedState --property=ActiveState --property=SubState --property=Result --property=ActiveEnterTimestamp")
+	if err != nil {
+		job.Error = appendGPUError(job.Error, fmt.Errorf("systemctl show: %w: %s", err, strings.TrimSpace(show)))
+	} else {
+		populateGPUJobState(&job, show)
+	}
+	if includeJournal {
+		journal, err := remoteSSH(ctx, host, "journalctl -u "+shellQuote(unit)+" --no-pager --output=short-iso -n 300")
+		job.Journal = strings.TrimSpace(journal)
+		if err != nil {
+			job.Error = appendGPUError(job.Error, fmt.Errorf("journalctl: %w: %s", err, strings.TrimSpace(journal)))
+		}
+	}
+	return job
+}
+
+func remoteSSH(ctx context.Context, host, remoteCommand string) (string, error) {
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", host, remoteCommand)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func parseGPUUnitList(out string) []string {
+	var units []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		unit := fields[0]
+		if validGPUUnitName(unit) && !seen[unit] {
+			units = append(units, unit)
+			seen[unit] = true
+		}
+	}
+	return units
+}
+
+func populateGPUJobState(job *gpuJobView, out string) {
+	for _, line := range strings.Split(out, "\n") {
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "Description":
+			job.Description = val
+		case "LoadedState":
+			job.LoadedState = val
+		case "ActiveState":
+			job.ActiveState = val
+		case "SubState":
+			job.SubState = val
+		case "Result":
+			job.Result = val
+		case "ActiveEnterTimestamp":
+			job.Since = val
+		}
+	}
+}
+
+func validGPUUnitName(unit string) bool {
+	if !strings.HasPrefix(unit, "streamctl-gpu-") {
+		return false
+	}
+	for _, r := range unit {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return len(unit) <= 128
+}
+
+func appendGPUError(existing string, err error) string {
+	if err == nil {
+		return existing
+	}
+	if existing == "" {
+		return err.Error()
+	}
+	return existing + "; " + err.Error()
 }
 
 func gpuTranscodeUnitName(rawPath string) string {

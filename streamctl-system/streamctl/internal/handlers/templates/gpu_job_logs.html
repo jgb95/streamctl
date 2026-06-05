@@ -1,0 +1,27 @@
+{{define "gpu_job_logs.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+	<div>
+		<h2 style="margin: 0;">GPU Job Logs</h2>
+		<div class="muted" style="font-size: 12px;"><code>{{.Job.UnitName}}</code> on <code>{{.Host}}</code></div>
+	</div>
+	<a href="/livestream-files" class="btn" style="margin-left: auto;">Back</a>
+	<a href="/gpu-worker/logs/{{.Job.UnitName}}" class="btn">Refresh</a>
+</div>
+
+<section class="unit-log">
+	<header>
+		<h3>{{if .Job.Description}}{{.Job.Description}}{{else}}GPU transcode{{end}}</h3>
+		<code>{{.Job.UnitName}}</code>
+	</header>
+	<div class="unit-meta">
+		<span>Loaded: {{if .Job.LoadedState}}{{.Job.LoadedState}}{{else}}unknown{{end}}</span>
+		<span>Active: {{if .Job.ActiveState}}{{.Job.ActiveState}}{{else}}unknown{{end}}</span>
+		<span>Sub: {{if .Job.SubState}}{{.Job.SubState}}{{else}}unknown{{end}}</span>
+		<span>Result: {{if .Job.Result}}{{.Job.Result}}{{else}}unknown{{end}}</span>
+		{{if .Job.Since}}<span>Since: {{.Job.Since}}</span>{{end}}
+	</div>
+	{{if .Job.Error}}<div class="inline-error">{{.Job.Error}}</div>{{end}}
+	<pre class="log-output">{{.Job.Journal}}</pre>
+</section>
+{{end}}

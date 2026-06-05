@@ -33,6 +33,45 @@
 	</div>
 	{{if .GPUWorker.Error}}<div class="inline-error">{{.GPUWorker.Error}}</div>{{end}}
 	{{if not .GPUConfigured}}<div class="hint">Files can be inspected, but processing buttons are disabled until a GPU worker is configured.</div>{{end}}
+	{{if .GPUStatus.Error}}<div class="inline-error">{{.GPUStatus.Error}}</div>{{end}}
+	{{if .GPUStatus.Available}}
+	<div class="unit-meta" style="border-bottom: 0; padding-left: 0; padding-right: 0;">
+		<span>Host: <code>{{.GPUStatus.Host}}</code></span>
+		{{if .GPUStatus.NvidiaSMI}}<span>GPU: <code>{{.GPUStatus.NvidiaSMI}}</code></span>{{end}}
+	</div>
+	{{if .GPUStatus.Jobs}}
+	<table style="margin-top: 10px;">
+		<thead>
+			<tr>
+				<th>GPU job</th>
+				<th>Active</th>
+				<th>Sub</th>
+				<th>Result</th>
+				<th></th>
+			</tr>
+		</thead>
+		<tbody>
+			{{range .GPUStatus.Jobs}}
+			<tr>
+				<td>
+					<code>{{.UnitName}}</code>
+					{{if .Description}}<div class="muted" style="font-size: 12px;">{{.Description}}</div>{{end}}
+				</td>
+				<td>{{if .ActiveState}}{{.ActiveState}}{{else}}unknown{{end}}</td>
+				<td>{{if .SubState}}{{.SubState}}{{else}}unknown{{end}}</td>
+				<td>{{if .Result}}{{.Result}}{{else}}unknown{{end}}</td>
+				<td><a class="btn" href="/gpu-worker/logs/{{.UnitName}}">Logs</a></td>
+			</tr>
+			{{if .Error}}
+			<tr><td colspan="5"><div class="inline-error">{{.Error}}</div></td></tr>
+			{{end}}
+			{{end}}
+		</tbody>
+	</table>
+	{{else}}
+	<div class="hint">No GPU transcode jobs found on the worker.</div>
+	{{end}}
+	{{end}}
 </div>
 
 {{if .Files}}
