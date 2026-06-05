@@ -7,9 +7,7 @@ SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 DIGITALOCEAN_TOKEN := $(strip $(DIGITAL_OCEAN_TOKEN))
-DIGITALOCEAN_GPU_TOKEN := $(strip $(or $(DIGITAL_OCEAN_GPU_TOKEN),$(shell doctl auth token --context streamctl-token 2>/dev/null)))
 export DIGITALOCEAN_TOKEN
-export DIGITALOCEAN_GPU_TOKEN
 
 # Cache the droplet's IP across recipes that need it.
 # This shells out to terraform once per make invocation, not per recipe.
@@ -20,7 +18,7 @@ IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
 	build shell run-local \
         ssh logs timers destroy check-token check-gpu-token check-ip stream-logs upload \
         install-rclone-config maybe-install-rclone-config \
-        install-digitalocean-gpu-token maybe-install-digitalocean-gpu-token backup-db \
+        install-digitalocean-gpu-token maybe-install-digitalocean-gpu-token verify-digitalocean-gpu-token backup-db \
         gpu-upload gpu-transcode
 
 # ---------- help ----------
@@ -38,8 +36,9 @@ check-token:
 
 # Internal sanity check: bail if no managed GPU worker token is configured.
 check-gpu-token:
-	@if [ -z "$${DIGITALOCEAN_GPU_TOKEN:-}" ]; then \
-	  echo "ERROR: DIGITAL_OCEAN_GPU_TOKEN is not set." >&2; \
+	@GPU_TOKEN="$${DIGITAL_OCEAN_GPU_TOKEN:-$$(doctl auth token --context streamctl-gpu 2>/dev/null || true)}"; \
+	if [ -z "$$GPU_TOKEN" ]; then \
+	  echo "ERROR: no GPU token found. Set DIGITAL_OCEAN_GPU_TOKEN or run 'doctl auth init --context streamctl-gpu'." >&2; \
 	  exit 1; \
 	fi
 
@@ -216,17 +215,24 @@ maybe-install-rclone-config: check-ip ## Install local rclone.conf when present;
 	fi
 
 install-digitalocean-gpu-token: check-ip check-gpu-token ## Install DIGITAL_OCEAN_GPU_TOKEN on the droplet for managed GPU workers.
-	@printf '%s\n' "$${DIGITALOCEAN_GPU_TOKEN}" | ssh root@$(IP) \
+	@GPU_TOKEN="$${DIGITAL_OCEAN_GPU_TOKEN:-$$(doctl auth token --context streamctl-gpu)}"; \
+	printf '%s\n' "$$GPU_TOKEN" | ssh root@$(IP) \
 	  'install -d -m 0750 /var/lib/streamctl && \
 	   install -m 0400 -o root -g root /dev/stdin /var/lib/streamctl/digitalocean-token'
 	@echo "Installed DigitalOcean GPU token at /var/lib/streamctl/digitalocean-token."
 
 maybe-install-digitalocean-gpu-token: check-ip ## Install DIGITAL_OCEAN_GPU_TOKEN when present; skip otherwise.
-	@if [ -n "$${DIGITALOCEAN_GPU_TOKEN:-}" ]; then \
+	@if [ -n "$${DIGITAL_OCEAN_GPU_TOKEN:-}" ] || doctl auth token --context streamctl-gpu >/dev/null 2>&1; then \
 	  $(MAKE) install-digitalocean-gpu-token; \
 	else \
-	  echo "DIGITAL_OCEAN_GPU_TOKEN is not set; skipping DigitalOcean GPU token install."; \
+	  echo "No DIGITAL_OCEAN_GPU_TOKEN or doctl streamctl-gpu context found; skipping DigitalOcean GPU token install."; \
 	fi
+
+verify-digitalocean-gpu-token: check-ip ## Verify the installed GPU token can list managed GPU droplets.
+	@ssh root@$(IP) 'token=$$(tr -d "\r\n" </var/lib/streamctl/digitalocean-token); \
+	  curl -sS -w "\nHTTP %{http_code}\n" \
+	    -H "Authorization: Bearer $$token" \
+	    "https://api.digitalocean.com/v2/droplets?tag_name=streamctl-gpu-worker"'
 
 # Usage: make gpu-upload GPU_HOST=ubuntu@1.2.3.4
 gpu-upload: ## Upload the NVENC transcode worker script and rclone config to a GPU VM.
