@@ -825,6 +825,8 @@ type gpuWorkerView struct {
 
 type gpuJobView struct {
 	UnitName    string
+	RawPath     string
+	Host        string
 	Description string
 	LoadedState string
 	ActiveState string
@@ -895,6 +897,16 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	log.Printf("GPU transcode %s submitted as %s: %s", rawPath, unitName, strings.TrimSpace(out))
+	if err := h.saveGPUJobLog(gpuJobView{
+		UnitName:    unitName,
+		RawPath:     rawPath,
+		Host:        host,
+		Description: "streamctl GPU transcode " + rawPath,
+		ActiveState: "queued",
+	}); err != nil {
+		log.Printf("saving GPU job %s failed: %v", unitName, err)
+	}
+	go h.monitorGPUJob(unitName, rawPath, host)
 
 	q := url.Values{}
 	q.Set("started", rawPath)
@@ -910,12 +922,24 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	host, err := h.gpuWorkerSSHHost(r.Context())
 	if err != nil {
+		if cached, dbErr := h.DB.GetGPUJobLog(unit); dbErr == nil {
+			h.render(w, "gpu_job_logs.html", map[string]any{
+				"Job":  gpuJobViewFromDB(*cached),
+				"Host": cached.Host,
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	job := h.gpuJob(ctx, host, unit, true)
+	if strings.TrimSpace(job.Journal) == "" {
+		if cached, err := h.DB.GetGPUJobLog(unit); err == nil {
+			job = gpuJobViewFromDB(*cached)
+		}
+	}
 	h.render(w, "gpu_job_logs.html", map[string]any{
 		"Job":  job,
 		"Host": host,
@@ -949,7 +973,7 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 	host := strings.TrimSpace(h.GPUWorkerHost)
 	if host == "" {
 		if worker.Status != "active" || worker.SSHHost == "" {
-			return status
+			return h.appendCachedGPUJobs(status)
 		}
 		host = worker.SSHHost
 	}
@@ -959,17 +983,50 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 	nvidia, err := remoteSSH(ctx, host, "nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw --format=csv,noheader,nounits 2>/dev/null || true")
 	if err != nil {
 		status.Error = fmt.Sprintf("GPU status unavailable: %v: %s", err, strings.TrimSpace(nvidia))
-		return status
+		return h.appendCachedGPUJobs(status)
 	}
 	status.Available = true
 	status.NvidiaSMI = strings.TrimSpace(nvidia)
 	unitsOut, err := remoteSSH(ctx, host, "systemctl list-units 'streamctl-gpu-*' --all --no-legend --plain 2>/dev/null || true")
 	if err != nil {
 		status.Error = fmt.Sprintf("GPU jobs unavailable: %v: %s", err, strings.TrimSpace(unitsOut))
-		return status
+		return h.appendCachedGPUJobs(status)
 	}
 	for _, unit := range parseGPUUnitList(unitsOut) {
-		status.Jobs = append(status.Jobs, h.gpuJob(ctx, host, unit, false))
+		job := h.gpuJob(ctx, host, unit, false)
+		status.Jobs = append(status.Jobs, job)
+		if isTerminalGPUJob(job) {
+			full := h.gpuJob(ctx, host, unit, true)
+			if err := h.saveGPUJobLog(full); err != nil {
+				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
+			}
+			h.destroyManagedGPUAfterTerminalJob(ctx, full)
+		}
+		if len(status.Jobs) >= 10 {
+			break
+		}
+	}
+	return h.appendCachedGPUJobs(status)
+}
+
+func (h *Handler) appendCachedGPUJobs(status gpuStatusView) gpuStatusView {
+	cached, err := h.DB.ListGPUJobLogs(10)
+	if err != nil {
+		if status.Error == "" {
+			status.Error = fmt.Sprintf("cached GPU jobs unavailable: %v", err)
+		}
+		return status
+	}
+	seen := map[string]bool{}
+	for _, job := range status.Jobs {
+		seen[job.UnitName] = true
+	}
+	for _, cachedJob := range cached {
+		if seen[cachedJob.UnitName] {
+			continue
+		}
+		status.Jobs = append(status.Jobs, gpuJobViewFromDB(cachedJob))
+		seen[cachedJob.UnitName] = true
 		if len(status.Jobs) >= 10 {
 			break
 		}
@@ -978,7 +1035,7 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 }
 
 func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal bool) gpuJobView {
-	job := gpuJobView{UnitName: unit}
+	job := gpuJobView{UnitName: unit, Host: host}
 	show, err := remoteSSH(ctx, host, "systemctl show "+shellQuote(unit)+" --property=Description --property=LoadedState --property=ActiveState --property=SubState --property=Result --property=ActiveEnterTimestamp")
 	if err != nil {
 		job.Error = appendGPUError(job.Error, fmt.Errorf("systemctl show: %w: %s", err, strings.TrimSpace(show)))
@@ -993,6 +1050,99 @@ func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal 
 		}
 	}
 	return job
+}
+
+func (h *Handler) monitorGPUJob(unitName, rawPath, host string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 48*time.Hour)
+	defer cancel()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("GPU job monitor %s stopped: %v", unitName, ctx.Err())
+			return
+		case <-ticker.C:
+			job := h.gpuJob(ctx, host, unitName, false)
+			job.RawPath = rawPath
+			if err := h.saveGPUJobLog(job); err != nil {
+				log.Printf("saving GPU job %s status failed: %v", unitName, err)
+			}
+			if !isTerminalGPUJob(job) {
+				continue
+			}
+			full := h.gpuJob(ctx, host, unitName, true)
+			full.RawPath = rawPath
+			if err := h.saveGPUJobLog(full); err != nil {
+				log.Printf("saving GPU job %s journal failed: %v", unitName, err)
+			}
+			h.destroyManagedGPUAfterTerminalJob(ctx, full)
+			return
+		}
+	}
+}
+
+func (h *Handler) saveGPUJobLog(job gpuJobView) error {
+	if strings.TrimSpace(job.UnitName) == "" {
+		return nil
+	}
+	return h.DB.UpsertGPUJobLog(db.GPUJobLog{
+		UnitName:    job.UnitName,
+		RawPath:     job.RawPath,
+		Host:        job.Host,
+		Description: job.Description,
+		ActiveState: job.ActiveState,
+		SubState:    job.SubState,
+		Result:      job.Result,
+		Journal:     job.Journal,
+		Error:       job.Error,
+	})
+}
+
+func gpuJobViewFromDB(job db.GPUJobLog) gpuJobView {
+	return gpuJobView{
+		UnitName:    job.UnitName,
+		RawPath:     job.RawPath,
+		Host:        job.Host,
+		Description: job.Description,
+		ActiveState: job.ActiveState,
+		SubState:    job.SubState,
+		Result:      job.Result,
+		Journal:     job.Journal,
+		Error:       job.Error,
+		Since:       job.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func isTerminalGPUJob(job gpuJobView) bool {
+	return job.ActiveState == "inactive" || job.ActiveState == "failed"
+}
+
+func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpuJobView) {
+	if strings.TrimSpace(h.DOTokenFile) == "" {
+		return
+	}
+	failed := job.ActiveState == "failed" || (job.Result != "" && job.Result != "success")
+	shouldDestroy := failed || h.GPUDestroyAfterJob
+	if !shouldDestroy {
+		return
+	}
+	client, err := h.doClient()
+	if err != nil {
+		log.Printf("GPU worker cleanup skipped for %s: %v", job.UnitName, err)
+		return
+	}
+	droplets, err := client.ListDropletsByTag(ctx, h.gpuWorkerTag())
+	if err != nil {
+		log.Printf("listing GPU workers for cleanup failed: %v", err)
+		return
+	}
+	for _, d := range droplets {
+		log.Printf("destroying GPU worker %d after job %s active=%s result=%s", d.ID, job.UnitName, job.ActiveState, job.Result)
+		if err := client.DeleteDroplet(ctx, d.ID); err != nil {
+			log.Printf("destroying GPU worker %d failed: %v", d.ID, err)
+		}
+	}
 }
 
 func remoteSSH(ctx context.Context, host, remoteCommand string) (string, error) {
@@ -1084,7 +1234,7 @@ func gpuTranscodeUnitName(rawPath string) string {
 	if name == "" {
 		name = "job"
 	}
-	return "streamctl-gpu-" + name + "-" + hash
+	return "streamctl-gpu-" + name + "-" + hash + ".service"
 }
 
 func shellQuote(s string) string {
@@ -1248,11 +1398,7 @@ func (h *Handler) gpuWorkerUserData() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading rclone config: %w", err)
 	}
-	token, err := h.doToken()
-	if err != nil {
-		return "", err
-	}
-	script := gpuTranscodeScript(h.GPUDestroyAfterJob)
+	script := gpuTranscodeScript()
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euxo pipefail
 DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
@@ -1262,17 +1408,14 @@ install -d -m 0700 /root
 base64 -d >/root/rclone.conf <<'STREAMCTL_RCLONE'
 %s
 STREAMCTL_RCLONE
-base64 -d >/root/digitalocean-token <<'STREAMCTL_DO_TOKEN'
-%s
-STREAMCTL_DO_TOKEN
 base64 -d >/root/transcode-nvenc.sh <<'STREAMCTL_SCRIPT'
 %s
 STREAMCTL_SCRIPT
-chmod 0400 /root/rclone.conf /root/digitalocean-token
+chmod 0400 /root/rclone.conf
 chmod 0755 /root/transcode-nvenc.sh
 echo "$DROPLET_ID" >/root/droplet-id
 echo 'streamctl GPU worker ready'
-`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(token)+"\n")), base64.StdEncoding.EncodeToString([]byte(script))), nil
+`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(script))), nil
 }
 
 func (h *Handler) gpuWorkerTag() string {
@@ -1293,20 +1436,7 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func gpuTranscodeScript(destroyAfterJob bool) string {
-	destroyBlock := ""
-	if destroyAfterJob {
-		destroyBlock = `
-if [ -f /root/digitalocean-token ] && [ -f /root/droplet-id ]; then
-  token="$(tr -d '\n\r' </root/digitalocean-token)"
-  droplet_id="$(tr -d '\n\r' </root/droplet-id)"
-  if [ -n "$token" ] && [ -n "$droplet_id" ]; then
-    echo "transcode: destroying GPU droplet ${droplet_id}"
-    curl -fsS -X DELETE -H "Authorization: Bearer ${token}" "https://api.digitalocean.com/v2/droplets/${droplet_id}" || true
-  fi
-fi
-`
-	}
+func gpuTranscodeScript() string {
 	return `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -1380,7 +1510,7 @@ rclone copyto "$out_file" "$(remote_path "$normalized_path")"
 rclone copyto "$ready_file" "$(remote_path "${normalized_path}.ready.json")"
 
 echo "transcode: ready ${normalized_path}"
-` + destroyBlock
+`
 }
 
 func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView, error) {

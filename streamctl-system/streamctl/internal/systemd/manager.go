@@ -496,7 +496,7 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		}
 		raw := m.rawRemoteClipPath(v)
 		local := m.localClipPath(v)
-		remote := strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + v
+		remote := m.remoteObjectPath(v)
 		b.WriteString("/run/current-system/sw/bin/mkdir -p ")
 		b.WriteString(shellQuote(filepath.Dir(raw)))
 		if m.Normalize {
@@ -514,6 +514,36 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 			b.WriteString(shellQuote("prefetch: using normalized cache " + v))
 			b.WriteString("\n")
 			b.WriteString("else\n")
+			normalizedRemote := m.remoteObjectPath(m.normalizedRemoteClipPath(v))
+			readyRemote := normalizedRemote + ".ready.json"
+			b.WriteString("if /run/current-system/sw/bin/rclone lsjson ")
+			b.WriteString(shellQuote(readyRemote))
+			b.WriteString(" >/dev/null 2>&1; then\n")
+			b.WriteString("  echo ")
+			b.WriteString(shellQuote("prefetch: fetching preprocessed normalized Spaces object " + m.normalizedRemoteClipPath(v)))
+			b.WriteString("\n")
+			b.WriteString("  if /run/current-system/sw/bin/rclone copyto ")
+			b.WriteString(shellQuote(normalizedRemote))
+			b.WriteString(" ")
+			b.WriteString(shellQuote(local))
+			b.WriteString(" && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
+			b.WriteString(shellQuote(local))
+			b.WriteString(" >/dev/null; then\n")
+			b.WriteString("    echo ")
+			b.WriteString(shellQuote("prefetch: using preprocessed normalized Spaces object " + v))
+			b.WriteString("\n")
+			b.WriteString("  else\n")
+			b.WriteString("    echo ")
+			b.WriteString(shellQuote("prefetch: preprocessed normalized Spaces object failed verification; falling back to raw " + v))
+			b.WriteString("\n")
+			b.WriteString("    /run/current-system/sw/bin/rm -f -- ")
+			b.WriteString(shellQuote(local))
+			b.WriteString("\n")
+			b.WriteString("  fi\n")
+			b.WriteString("fi\n")
+			b.WriteString("if [ ! -f ")
+			b.WriteString(shellQuote(local))
+			b.WriteString(" ]; then\n")
 		}
 		b.WriteString("if [ -f ")
 		b.WriteString(shellQuote(raw))
@@ -532,6 +562,7 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		b.WriteString("fi\n")
 		if m.Normalize {
 			b.WriteString(m.renderNormalizeCommand(raw, local, remote))
+			b.WriteString("fi\n")
 			b.WriteString("fi\n")
 		}
 	}
@@ -845,6 +876,14 @@ func (m *Manager) normalizedClipPath(source string) string {
 	ext := filepath.Ext(source)
 	base := strings.TrimSuffix(source, ext)
 	return filepath.Join(m.CacheDir, "normalized", base+".mp4")
+}
+
+func (m *Manager) normalizedRemoteClipPath(source string) string {
+	return strings.Replace(source, "/recordings/edits/livestream/", "/recordings/normalized/livestream/", 1)
+}
+
+func (m *Manager) remoteObjectPath(source string) string {
+	return strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + source
 }
 
 func (m *Manager) remoteCachePaths(source string) []string {

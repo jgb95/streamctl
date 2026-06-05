@@ -77,6 +77,20 @@ CREATE TABLE IF NOT EXISTS stream_videos (
 	PRIMARY KEY (stream_id, position),
 	FOREIGN KEY (stream_id) REFERENCES streams(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS gpu_job_logs (
+	unit_name TEXT PRIMARY KEY,
+	raw_path TEXT NOT NULL DEFAULT '',
+	host TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL DEFAULT '',
+	active_state TEXT NOT NULL DEFAULT '',
+	sub_state TEXT NOT NULL DEFAULT '',
+	result TEXT NOT NULL DEFAULT '',
+	journal TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 func (db *DB) Migrate() error {
@@ -243,6 +257,20 @@ type NostrRelay struct {
 	URL       string
 	Enabled   bool
 	CreatedAt time.Time
+}
+
+type GPUJobLog struct {
+	UnitName    string
+	RawPath     string
+	Host        string
+	Description string
+	ActiveState string
+	SubState    string
+	Result      string
+	Journal     string
+	Error       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // ---------- Endpoint queries ----------
@@ -519,6 +547,64 @@ func (db *DB) UpdateStream(s *Stream, endpointIDs []int64, videos []string) erro
 func (db *DB) DeleteStream(id int64) error {
 	_, err := db.Exec(`DELETE FROM streams WHERE id = ?`, id)
 	return err
+}
+
+// ---------- GPU job log queries ----------
+
+func (db *DB) UpsertGPUJobLog(job GPUJobLog) error {
+	_, err := db.Exec(`
+		INSERT INTO gpu_job_logs (
+			unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(unit_name) DO UPDATE SET
+			raw_path = excluded.raw_path,
+			host = excluded.host,
+			description = excluded.description,
+			active_state = excluded.active_state,
+			sub_state = excluded.sub_state,
+			result = excluded.result,
+			journal = excluded.journal,
+			error = excluded.error,
+			updated_at = CURRENT_TIMESTAMP
+	`, job.UnitName, job.RawPath, job.Host, job.Description, job.ActiveState, job.SubState, job.Result, job.Journal, job.Error)
+	return err
+}
+
+func (db *DB) GetGPUJobLog(unitName string) (*GPUJobLog, error) {
+	var job GPUJobLog
+	err := db.QueryRow(`
+		SELECT unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, created_at, updated_at
+		FROM gpu_job_logs WHERE unit_name = ?
+	`, unitName).Scan(
+		&job.UnitName, &job.RawPath, &job.Host, &job.Description, &job.ActiveState, &job.SubState, &job.Result, &job.Journal, &job.Error, &job.CreatedAt, &job.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func (db *DB) ListGPUJobLogs(limit int) ([]GPUJobLog, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.Query(`
+		SELECT unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, created_at, updated_at
+		FROM gpu_job_logs ORDER BY updated_at DESC LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GPUJobLog
+	for rows.Next() {
+		var job GPUJobLog
+		if err := rows.Scan(&job.UnitName, &job.RawPath, &job.Host, &job.Description, &job.ActiveState, &job.SubState, &job.Result, &job.Journal, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	return out, rows.Err()
 }
 
 // ---------- Nostr queries ----------
