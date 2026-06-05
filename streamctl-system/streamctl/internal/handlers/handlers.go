@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path"
 	"path/filepath"
 	"sort"
@@ -21,6 +24,8 @@ import (
 	"time"
 
 	"streamctl/internal/db"
+	"streamctl/internal/doclient"
+	"streamctl/internal/nostrpub"
 	"streamctl/internal/probe"
 	"streamctl/internal/systemd"
 )
@@ -29,14 +34,26 @@ import (
 var templateFS embed.FS
 
 type Handler struct {
-	DB           *db.DB
-	Secret       string
-	VideoDir     string
-	CacheDir     string
-	HLSDir       string
-	Remote       string
-	RcloneConfig string
-	Systemd      *systemd.Manager
+	DB                 *db.DB
+	Secret             string
+	VideoDir           string
+	CacheDir           string
+	HLSDir             string
+	Remote             string
+	RcloneConfig       string
+	NostrKeyDir        string
+	NostrKeyOwner      string
+	GPUWorkerHost      string
+	GPUWorkerCommand   string
+	DOTokenFile        string
+	GPUDropletName     string
+	GPUDropletRegion   string
+	GPUDropletSize     string
+	GPUDropletImage    string
+	GPUSSHKeyName      string
+	GPUWorkerUser      string
+	GPUDestroyAfterJob bool
+	Systemd            *systemd.Manager
 
 	funcs template.FuncMap
 }
@@ -68,12 +85,24 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/stop/", h.auth(http.HandlerFunc(h.streamStop)))
 	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
+	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(h.livestreamFiles)))
+	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
+	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
+	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
 
 	mux.Handle("/endpoints", h.auth(http.HandlerFunc(h.endpoints)))
 	mux.Handle("/endpoints/create", h.auth(http.HandlerFunc(h.endpointCreate)))
 	mux.Handle("/endpoints/update/", h.auth(http.HandlerFunc(h.endpointUpdate)))
 	mux.Handle("/endpoints/delete/", h.auth(http.HandlerFunc(h.endpointDelete)))
 	mux.Handle("/endpoints/test/", h.auth(http.HandlerFunc(h.endpointTest)))
+
+	mux.Handle("/nostr", h.auth(http.HandlerFunc(h.nostr)))
+	mux.Handle("/nostr/keys/create", h.auth(http.HandlerFunc(h.nostrKeyCreate)))
+	mux.Handle("/nostr/keys/update/", h.auth(http.HandlerFunc(h.nostrKeyUpdate)))
+	mux.Handle("/nostr/keys/delete/", h.auth(http.HandlerFunc(h.nostrKeyDelete)))
+	mux.Handle("/nostr/relays/create", h.auth(http.HandlerFunc(h.nostrRelayCreate)))
+	mux.Handle("/nostr/relays/update/", h.auth(http.HandlerFunc(h.nostrRelayUpdate)))
+	mux.Handle("/nostr/relays/delete/", h.auth(http.HandlerFunc(h.nostrRelayDelete)))
 }
 
 // ---------- auth ----------
@@ -366,6 +395,10 @@ func (h *Handler) renderStreamForm(w http.ResponseWriter, status int, title, act
 	if err != nil {
 		return err
 	}
+	nostrKeys, err := h.DB.ListNostrKeys()
+	if err != nil {
+		return err
+	}
 	if selected == nil {
 		selected = make([]int64, len(endpoints))
 		for i, e := range endpoints {
@@ -383,6 +416,7 @@ func (h *Handler) renderStreamForm(w http.ResponseWriter, status int, title, act
 		"Videos":          files,
 		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
 		"Endpoints":       endpoints,
+		"NostrKeys":       nostrKeys,
 		"SelectedIDs":     selected,
 		"FormAction":      action,
 		"Title":           title,
@@ -410,6 +444,10 @@ func (h *Handler) streamDraftFromForm(r *http.Request) *db.Stream {
 		Videos:       videos,
 		ScheduleType: scheduleType,
 		OnCalendar:   strings.TrimSpace(r.FormValue("on_calendar")),
+		NostrEnabled: r.FormValue("nostr_enabled") == "on",
+		NostrKeyID:   parseOptionalInt64(r.FormValue("nostr_key_id")),
+		NostrTitle:   strings.TrimSpace(r.FormValue("nostr_title")),
+		NostrSummary: strings.TrimSpace(r.FormValue("nostr_summary")),
 		Enabled:      r.FormValue("enabled") == "on",
 	}
 }
@@ -554,9 +592,26 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 		Name:         name,
 		ScheduleType: scheduleType,
 		OnCalendar:   onCalendar,
+		NostrEnabled: r.FormValue("nostr_enabled") == "on",
+		NostrKeyID:   parseOptionalInt64(r.FormValue("nostr_key_id")),
+		NostrTitle:   strings.TrimSpace(r.FormValue("nostr_title")),
+		NostrSummary: strings.TrimSpace(r.FormValue("nostr_summary")),
 		Enabled:      r.FormValue("enabled") == "on",
 	}
+	if s.NostrEnabled {
+		if s.NostrKeyID == 0 {
+			return nil, nil, nil, fmt.Errorf("Nostr key required when Nostr publishing is enabled")
+		}
+		if _, err := h.DB.GetNostrKey(s.NostrKeyID); err != nil {
+			return nil, nil, nil, fmt.Errorf("Nostr key not found")
+		}
+	}
 	return s, ids, videos, nil
+}
+
+func parseOptionalInt64(value string) int64 {
+	id, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	return id
 }
 
 // ---------- endpoints ----------
@@ -738,6 +793,682 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 					return err
 				}
 				break
+			}
+		}
+	}
+	return nil
+}
+
+// ---------- Livestream files ----------
+
+type livestreamFileView struct {
+	Conference     string
+	Name           string
+	RawPath        string
+	NormalizedPath string
+	Processed      bool
+}
+
+type gpuWorkerView struct {
+	Managed    bool
+	Configured bool
+	ID         int64
+	Name       string
+	Status     string
+	IP         string
+	SSHHost    string
+	Error      string
+}
+
+func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.Remote) == "" {
+		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
+		return
+	}
+	files, err := h.listLivestreamFiles(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	worker := h.gpuWorkerView(r.Context())
+	h.render(w, "livestream_files.html", map[string]any{
+		"Files":         files,
+		"GPUConfigured": worker.Configured,
+		"GPUWorkerHost": h.GPUWorkerHost,
+		"GPUWorker":     worker,
+		"Started":       r.URL.Query().Get("started"),
+		"Error":         r.URL.Query().Get("err"),
+	})
+}
+
+func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) {
+	if !h.gpuWorkerConfigured() {
+		http.Error(w, "GPU worker is not configured", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rawPath := strings.TrimSpace(r.FormValue("path"))
+	if _, err := livestreamNormalizedPath(rawPath); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	host, err := h.gpuWorkerSSHHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	command := strings.TrimSpace(h.GPUWorkerCommand)
+	go func() {
+		cmd := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", host, command, rawPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("GPU transcode %s failed: %v: %s", rawPath, err, strings.TrimSpace(string(out)))
+			return
+		}
+		log.Printf("GPU transcode %s completed: %s", rawPath, strings.TrimSpace(string(out)))
+	}()
+
+	q := url.Values{}
+	q.Set("started", rawPath)
+	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+}
+
+func (h *Handler) gpuWorkerConfigured() bool {
+	if strings.TrimSpace(h.GPUWorkerHost) != "" && strings.TrimSpace(h.GPUWorkerCommand) != "" {
+		return true
+	}
+	return strings.TrimSpace(h.DOTokenFile) != "" && strings.TrimSpace(h.GPUWorkerCommand) != ""
+}
+
+func (h *Handler) gpuWorkerSSHHost(ctx context.Context) (string, error) {
+	if strings.TrimSpace(h.GPUWorkerHost) != "" {
+		return strings.TrimSpace(h.GPUWorkerHost), nil
+	}
+	worker := h.gpuWorkerView(ctx)
+	if worker.Error != "" {
+		return "", fmt.Errorf("%s", worker.Error)
+	}
+	if worker.IP == "" || worker.Status != "active" {
+		return "", fmt.Errorf("managed GPU worker is not active")
+	}
+	return worker.SSHHost, nil
+}
+
+func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
+	view := gpuWorkerView{
+		Managed:    strings.TrimSpace(h.DOTokenFile) != "",
+		Configured: h.gpuWorkerConfigured(),
+		SSHHost:    strings.TrimSpace(h.GPUWorkerHost),
+	}
+	if !view.Managed {
+		return view
+	}
+	client, err := h.doClient()
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	droplets, err := client.ListDropletsByTag(ctx, h.gpuWorkerTag())
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	if len(droplets) == 0 {
+		return view
+	}
+	d := droplets[0]
+	view.ID = d.ID
+	view.Name = d.Name
+	view.Status = d.Status
+	view.IP = d.PublicIPv4()
+	if view.IP != "" {
+		view.SSHHost = firstNonEmptyString(h.GPUWorkerUser, "root") + "@" + view.IP
+	}
+	return view
+}
+
+func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
+	client, err := h.doClient()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	existing, err := client.ListDropletsByTag(r.Context(), h.gpuWorkerTag())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if len(existing) > 0 {
+		http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+		return
+	}
+	key, err := h.gpuSSHKey(r.Context(), client)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	userData, err := h.gpuWorkerUserData()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := client.CreateDroplet(r.Context(), doclient.CreateDropletRequest{
+		Name:       h.gpuDropletName(),
+		Region:     firstNonEmptyString(h.GPUDropletRegion, "nyc2"),
+		Size:       firstNonEmptyString(h.GPUDropletSize, "gpu-h100x1-80gb"),
+		Image:      firstNonEmptyString(h.GPUDropletImage, "ubuntu-24-04-x64"),
+		SSHKeys:    []string{key.Fingerprint},
+		Monitoring: true,
+		Tags:       []string{h.gpuWorkerTag(), "streamctl"},
+		UserData:   userData,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+}
+
+func (h *Handler) gpuWorkerDestroy(w http.ResponseWriter, r *http.Request) {
+	client, err := h.doClient()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	droplets, err := client.ListDropletsByTag(r.Context(), h.gpuWorkerTag())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	for _, d := range droplets {
+		if err := client.DeleteDroplet(r.Context(), d.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+}
+
+func (h *Handler) doClient() (*doclient.Client, error) {
+	token, err := h.doToken()
+	if err != nil {
+		return nil, err
+	}
+	return doclient.New(token), nil
+}
+
+func (h *Handler) doToken() (string, error) {
+	if strings.TrimSpace(h.DOTokenFile) == "" {
+		return "", fmt.Errorf("DigitalOcean token file is not configured")
+	}
+	data, err := os.ReadFile(h.DOTokenFile)
+	if err != nil {
+		return "", fmt.Errorf("reading DigitalOcean token file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("DigitalOcean token file is empty")
+	}
+	return token, nil
+}
+
+func (h *Handler) gpuSSHKey(ctx context.Context, client *doclient.Client) (*doclient.SSHKey, error) {
+	keys, err := client.ListSSHKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	want := strings.TrimSpace(h.GPUSSHKeyName)
+	for _, key := range keys {
+		if key.Name == want || key.Fingerprint == want || strconv.FormatInt(key.ID, 10) == want {
+			return &key, nil
+		}
+	}
+	return nil, fmt.Errorf("DigitalOcean SSH key %q not found", want)
+}
+
+func (h *Handler) gpuWorkerUserData() (string, error) {
+	rcloneConfig, err := os.ReadFile(h.RcloneConfig)
+	if err != nil {
+		return "", fmt.Errorf("reading rclone config: %w", err)
+	}
+	token, err := h.doToken()
+	if err != nil {
+		return "", err
+	}
+	script := gpuTranscodeScript(h.GPUDestroyAfterJob)
+	return fmt.Sprintf(`#!/usr/bin/env bash
+set -euxo pipefail
+DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg rclone curl
+install -d -m 0700 /root
+base64 -d >/root/rclone.conf <<'STREAMCTL_RCLONE'
+%s
+STREAMCTL_RCLONE
+base64 -d >/root/digitalocean-token <<'STREAMCTL_DO_TOKEN'
+%s
+STREAMCTL_DO_TOKEN
+base64 -d >/root/transcode-nvenc.sh <<'STREAMCTL_SCRIPT'
+%s
+STREAMCTL_SCRIPT
+chmod 0400 /root/rclone.conf /root/digitalocean-token
+chmod 0755 /root/transcode-nvenc.sh
+echo "$DROPLET_ID" >/root/droplet-id
+echo 'streamctl GPU worker ready'
+`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(token)+"\n")), base64.StdEncoding.EncodeToString([]byte(script))), nil
+}
+
+func (h *Handler) gpuWorkerTag() string {
+	return "streamctl-gpu-worker"
+}
+
+func (h *Handler) gpuDropletName() string {
+	return firstNonEmptyString(h.GPUDropletName, "streamctl-gpu-worker")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func gpuTranscodeScript(destroyAfterJob bool) string {
+	destroyBlock := ""
+	if destroyAfterJob {
+		destroyBlock = `
+if [ -f /root/digitalocean-token ] && [ -f /root/droplet-id ]; then
+  token="$(tr -d '\n\r' </root/digitalocean-token)"
+  droplet_id="$(tr -d '\n\r' </root/droplet-id)"
+  if [ -n "$token" ] && [ -n "$droplet_id" ]; then
+    echo "transcode: destroying GPU droplet ${droplet_id}"
+    curl -fsS -X DELETE -H "Authorization: Bearer ${token}" "https://api.digitalocean.com/v2/droplets/${droplet_id}" || true
+  fi
+fi
+`
+	}
+	return `#!/usr/bin/env bash
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: $0 <conference>/recordings/edits/livestream/<file.mp4>" >&2
+  exit 2
+fi
+
+raw_path="${1#/}"
+remote="${SPACES_REMOTE:-spaces:btcpp}"
+workdir="${WORKDIR:-/tmp/streamctl-transcode}"
+video_bitrate="${VIDEO_BITRATE:-6800k}"
+audio_bitrate="${AUDIO_BITRATE:-160k}"
+
+case "$raw_path" in
+  */recordings/edits/livestream/*) ;;
+  *)
+    echo "path must be <conference>/recordings/edits/livestream/<file>" >&2
+    exit 2
+    ;;
+esac
+
+conference="${raw_path%%/recordings/edits/livestream/*}"
+filename="${raw_path##*/}"
+normalized_path="${conference}/recordings/normalized/livestream/${filename}"
+
+remote_path() {
+  case "$remote" in
+    *:|*/) printf '%s%s' "$remote" "$1" ;;
+    *) printf '%s/%s' "$remote" "$1" ;;
+  esac
+}
+
+export RCLONE_CONFIG="${RCLONE_CONFIG:-/root/rclone.conf}"
+mkdir -p "$workdir"
+raw_file="${workdir}/${filename}"
+out_file="${workdir}/${filename%.mp4}.normalized.mp4"
+ready_file="${workdir}/${filename}.ready.json"
+
+echo "transcode: downloading ${raw_path}"
+rclone copyto "$(remote_path "$raw_path")" "$raw_file"
+
+echo "transcode: encoding ${raw_path} -> ${normalized_path}"
+rm -f -- "$out_file"
+ffmpeg -hide_banner -loglevel error -stats_period 30 -progress pipe:1 -y \
+  -i "$raw_file" \
+  -map 0:v:0 -map 0:a:0 -dn -sn \
+  -c:v h264_nvenc -preset p4 -profile:v high -pix_fmt yuv420p \
+  -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
+  -b:v "$video_bitrate" -maxrate "$video_bitrate" -bufsize "${VIDEO_BUFSIZE:-13600k}" \
+  -c:a aac -b:a "$audio_bitrate" -ar 48000 -ac 2 \
+  -movflags +faststart \
+  "$out_file"
+
+echo "transcode: verifying ${out_file}"
+ffprobe -v error -show_streams "$out_file" >/dev/null
+
+cat > "$ready_file" <<EOF
+{
+  "raw_path": "${raw_path}",
+  "normalized_path": "${normalized_path}",
+  "video_bitrate": "${video_bitrate}",
+  "audio_bitrate": "${audio_bitrate}",
+  "encoder": "h264_nvenc",
+  "status": "ready"
+}
+EOF
+
+echo "transcode: uploading ${normalized_path}"
+rclone copyto "$out_file" "$(remote_path "$normalized_path")"
+rclone copyto "$ready_file" "$(remote_path "${normalized_path}.ready.json")"
+
+echo "transcode: ready ${normalized_path}"
+` + destroyBlock
+}
+
+func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView, error) {
+	confs, err := h.listSpacesConferences(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []livestreamFileView
+	for _, conf := range confs {
+		name := strings.TrimSuffix(strings.TrimSuffix(conf.Path, "/recordings/"), "/")
+		rawPrefix := name + "/recordings/edits/livestream/"
+		rawFiles, err := h.listSpacesFilesOnly(ctx, rawPrefix)
+		if err != nil {
+			continue
+		}
+		normalizedPrefix := name + "/recordings/normalized/livestream/"
+		normalizedFiles, err := h.listSpacesFilesOnly(ctx, normalizedPrefix)
+		if err != nil {
+			normalizedFiles = nil
+		}
+		processed := make(map[string]bool, len(normalizedFiles))
+		for _, f := range normalizedFiles {
+			processed[f.Name] = true
+		}
+		for _, f := range rawFiles {
+			normalizedPath, err := livestreamNormalizedPath(f.Path)
+			if err != nil {
+				continue
+			}
+			out = append(out, livestreamFileView{
+				Conference:     name,
+				Name:           f.Name,
+				RawPath:        f.Path,
+				NormalizedPath: normalizedPath,
+				Processed:      processed[f.Name],
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if strings.ToLower(out[i].Conference) == strings.ToLower(out[j].Conference) {
+			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		}
+		return strings.ToLower(out[i].Conference) < strings.ToLower(out[j].Conference)
+	})
+	return out, nil
+}
+
+func (h *Handler) listSpacesFilesOnly(ctx context.Context, prefix string) ([]spacesEntry, error) {
+	_, files, err := h.listSpacesPrefix(ctx, prefix)
+	return files, err
+}
+
+func livestreamNormalizedPath(rawPath string) (string, error) {
+	rawPath = strings.TrimSpace(strings.ReplaceAll(rawPath, "\\", "/"))
+	parts := strings.Split(rawPath, "/")
+	if len(parts) < 5 || parts[1] != "recordings" || parts[2] != "edits" || parts[3] != "livestream" {
+		return "", fmt.Errorf("path must be <conference>/recordings/edits/livestream/<file>")
+	}
+	file := parts[len(parts)-1]
+	if !isVideoFile(file) {
+		return "", fmt.Errorf("path must be a video file")
+	}
+	return parts[0] + "/recordings/normalized/livestream/" + file, nil
+}
+
+// ---------- Nostr ----------
+
+func (h *Handler) nostr(w http.ResponseWriter, r *http.Request) {
+	keys, err := h.DB.ListNostrKeys()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	relays, err := h.DB.ListNostrRelays()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.render(w, "nostr.html", map[string]any{
+		"Keys":   keys,
+		"Relays": relays,
+		"Error":  r.URL.Query().Get("err"),
+	})
+}
+
+func (h *Handler) nostrKeyCreate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		http.Redirect(w, r, "/nostr?err="+url.QueryEscape("key name required"), http.StatusSeeOther)
+		return
+	}
+	info, err := nostrpub.DecodeKey(r.FormValue("nsec"))
+	if err != nil {
+		http.Redirect(w, r, "/nostr?err="+url.QueryEscape("invalid nsec: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+	if err := os.MkdirAll(h.NostrKeyDir, 0750); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	f, err := os.CreateTemp(h.NostrKeyDir, "nostr-*.key")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	secretPath := f.Name()
+	_ = f.Close()
+	if err := nostrpub.WriteSecretFile(secretPath, info.Secret); err != nil {
+		_ = os.Remove(secretPath)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.chownNostrKey(secretPath); err != nil {
+		_ = os.Remove(secretPath)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, err = h.DB.CreateNostrKey(&db.NostrKey{
+		Name:       name,
+		PubKey:     info.PubKey,
+		Npub:       info.Npub,
+		SecretPath: secretPath,
+		Enabled:    true,
+	})
+	if err != nil {
+		_ = os.Remove(secretPath)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nostr", http.StatusSeeOther)
+}
+
+func (h *Handler) nostrKeyUpdate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/nostr/keys/update/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	key, err := h.DB.GetNostrKey(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	key.Name = strings.TrimSpace(r.FormValue("name"))
+	key.Enabled = r.FormValue("enabled") == "on"
+	if key.Name == "" {
+		http.Redirect(w, r, "/nostr?err="+url.QueryEscape("key name required"), http.StatusSeeOther)
+		return
+	}
+	if err := h.DB.UpdateNostrKey(key); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.resyncNostrStreams(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nostr", http.StatusSeeOther)
+}
+
+func (h *Handler) nostrKeyDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/nostr/keys/delete/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	key, err := h.DB.GetNostrKey(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err := h.DB.DeleteNostrKey(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = os.Remove(key.SecretPath)
+	if err := h.resyncNostrStreams(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nostr", http.StatusSeeOther)
+}
+
+func (h *Handler) nostrRelayCreate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	relay := &db.NostrRelay{
+		URL:     normalizeRelayURL(r.FormValue("url")),
+		Enabled: true,
+	}
+	if relay.URL == "" {
+		http.Redirect(w, r, "/nostr?err="+url.QueryEscape("relay URL required"), http.StatusSeeOther)
+		return
+	}
+	if _, err := h.DB.CreateNostrRelay(relay); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.resyncNostrStreams(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nostr", http.StatusSeeOther)
+}
+
+func (h *Handler) nostrRelayUpdate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/nostr/relays/update/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	relay := &db.NostrRelay{
+		ID:      id,
+		URL:     normalizeRelayURL(r.FormValue("url")),
+		Enabled: r.FormValue("enabled") == "on",
+	}
+	if relay.URL == "" {
+		http.Redirect(w, r, "/nostr?err="+url.QueryEscape("relay URL required"), http.StatusSeeOther)
+		return
+	}
+	if err := h.DB.UpdateNostrRelay(relay); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.resyncNostrStreams(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nostr", http.StatusSeeOther)
+}
+
+func (h *Handler) nostrRelayDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/nostr/relays/delete/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := h.DB.DeleteNostrRelay(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.resyncNostrStreams(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nostr", http.StatusSeeOther)
+}
+
+func (h *Handler) chownNostrKey(path string) error {
+	owner := strings.TrimSpace(h.NostrKeyOwner)
+	if owner == "" {
+		return nil
+	}
+	u, err := user.Lookup(owner)
+	if err != nil {
+		return nil
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return nil
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return nil
+	}
+	return os.Chown(path, uid, gid)
+}
+
+func normalizeRelayURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "wss://") && !strings.HasPrefix(value, "ws://") {
+		value = "wss://" + value
+	}
+	return value
+}
+
+func (h *Handler) resyncNostrStreams() error {
+	streams, err := h.DB.ListStreams()
+	if err != nil {
+		return err
+	}
+	for _, s := range streams {
+		if s.NostrEnabled {
+			if err := h.Systemd.Sync(&s); err != nil {
+				return err
 			}
 		}
 	}

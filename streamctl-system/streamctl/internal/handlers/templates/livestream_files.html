@@ -1,0 +1,81 @@
+{{define "livestream_files.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display: flex; align-items: center; margin-bottom: 16px;">
+	<h2 style="margin: 0;">Livestream files</h2>
+	<a href="/livestream-files" class="btn" style="margin-left: auto;">Refresh</a>
+</div>
+
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+{{if .Started}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Started GPU processing for {{.Started}}</div>{{end}}
+
+<div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
+	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+		<strong>GPU worker</strong>
+		{{if .GPUWorker.Managed}}
+			{{if .GPUWorker.ID}}
+				<span class="badge {{if eq .GPUWorker.Status "active"}}badge-active{{else}}badge-inactive{{end}}">{{.GPUWorker.Status}}</span>
+				{{if .GPUWorker.SSHHost}}<code>{{.GPUWorker.SSHHost}}</code>{{end}}
+				<form method="post" action="/gpu-worker/destroy" style="background: none; border: none; padding: 0; margin-left: auto;" onsubmit="return confirm('Destroy the GPU worker droplet?');">
+					<button type="submit" class="btn btn-danger">Destroy GPU</button>
+				</form>
+			{{else}}
+				<span class="badge badge-inactive">not created</span>
+				<form method="post" action="/gpu-worker/create" style="background: none; border: none; padding: 0; margin-left: auto;">
+					<button type="submit" class="btn btn-primary">Create GPU</button>
+				</form>
+			{{end}}
+		{{else if .GPUConfigured}}
+			<span class="badge badge-active">external</span>
+			<code>{{.GPUWorkerHost}}</code>
+		{{else}}
+			<span class="badge badge-inactive">not configured</span>
+		{{end}}
+	</div>
+	{{if .GPUWorker.Error}}<div class="inline-error">{{.GPUWorker.Error}}</div>{{end}}
+	{{if not .GPUConfigured}}<div class="hint">Files can be inspected, but processing buttons are disabled until a GPU worker is configured.</div>{{end}}
+</div>
+
+{{if .Files}}
+<table>
+	<thead>
+		<tr>
+			<th>Conference</th>
+			<th>Raw file</th>
+			<th>Normalized output</th>
+			<th>Status</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{{range .Files}}
+		<tr>
+			<td>{{.Conference}}</td>
+			<td><code>{{.RawPath}}</code></td>
+			<td><code>{{.NormalizedPath}}</code></td>
+			<td>
+				{{if .Processed}}
+				<span class="badge badge-active">processed</span>
+				{{else}}
+				<span class="badge badge-failed">missing</span>
+				{{end}}
+			</td>
+			<td>
+				{{if .Processed}}
+				<span class="muted">Ready</span>
+				{{else if and $.GPUConfigured (or (not $.GPUWorker.Managed) (eq $.GPUWorker.Status "active"))}}
+				<form method="post" action="/livestream-files/process" style="background: none; border: none; padding: 0;">
+					<input type="hidden" name="path" value="{{.RawPath}}">
+					<button type="submit" class="btn btn-primary">Process</button>
+				</form>
+				{{else}}
+				<button type="button" class="btn" disabled>Process</button>
+				{{end}}
+			</td>
+		</tr>
+		{{end}}
+	</tbody>
+</table>
+{{else}}
+<p class="muted">No files found under <code>{conf}/recordings/edits/livestream/</code>.</p>
+{{end}}
+{{end}}

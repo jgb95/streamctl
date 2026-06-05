@@ -15,20 +15,23 @@ import (
 // Manager generates systemd service + timer units for streams,
 // and reloads/enables/disables them via systemctl.
 type Manager struct {
-	UnitDir      string // e.g. /run/systemd/system
-	UnitPrefix   string // e.g. "streamctl-"
-	RunUser      string
-	VideoDir     string
-	CacheDir     string
-	HLSDir       string
-	Remote       string // rclone remote, e.g. spaces:bucket
-	RcloneConfig string
-	NotifyEmail  string
-	SendmailPath string
-	CleanupCache bool
-	Normalize    bool
-	VideoBitrate string
-	AudioBitrate string
+	UnitDir       string // e.g. /run/systemd/system
+	UnitPrefix    string // e.g. "streamctl-"
+	RunUser       string
+	VideoDir      string
+	CacheDir      string
+	HLSDir        string
+	Remote        string // rclone remote, e.g. spaces:bucket
+	RcloneConfig  string
+	NotifyEmail   string
+	SendmailPath  string
+	CleanupCache  bool
+	Normalize     bool
+	VideoBitrate  string
+	AudioBitrate  string
+	NostrKeyDir   string
+	PublicBaseURL string
+	SelfPath      string
 }
 
 type UnitLog struct {
@@ -359,6 +362,10 @@ func (m *Manager) renderService(s *db.Stream) string {
 	}
 
 	// Stream keys are embedded in the unit file — file mode 0600 protects them.
+	readOnlyPaths := m.VideoDir
+	if strings.TrimSpace(m.NostrKeyDir) != "" {
+		readOnlyPaths += " " + m.NostrKeyDir
+	}
 	return fmt.Sprintf(`[Unit]
 Description=streamctl: %s
 After=network-online.target %s
@@ -391,7 +398,7 @@ ReadWritePaths=%s
 		m.RunUser,
 		systemdQuote(m.probeScriptPath(s.ID)),
 		systemdQuote(m.runScriptPath(s.ID)),
-		m.VideoDir,
+		readOnlyPaths,
 		m.CacheDir,
 		m.HLSDir,
 	)
@@ -406,12 +413,15 @@ func (m *Manager) renderPrefetchService(s *db.Stream) string {
 Description=streamctl prefetch: %s
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 User=%s
 %s
 ExecStart=%s
+Restart=on-failure
+RestartSec=10min
 TimeoutStartSec=12h
 StandardOutput=journal
 StandardError=journal
@@ -477,12 +487,16 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		b.WriteString(m.renderNotifyFunction(s))
 		b.WriteString("trap 'rc=$?; notify failure; exit $rc' ERR\n")
 	}
+	if m.Normalize {
+		b.WriteString(m.renderPrefetchFallbackFunctions(s))
+	}
 	for _, v := range s.Videos {
 		if !isRemoteClip(v) {
 			continue
 		}
 		raw := m.rawRemoteClipPath(v)
 		local := m.localClipPath(v)
+		remote := strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + v
 		b.WriteString("/run/current-system/sw/bin/mkdir -p ")
 		b.WriteString(shellQuote(filepath.Dir(raw)))
 		if m.Normalize {
@@ -511,25 +525,44 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		b.WriteString("\n")
 		b.WriteString("else\n")
 		b.WriteString("/run/current-system/sw/bin/rclone copyto ")
-		b.WriteString(shellQuote(strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + v))
+		b.WriteString(shellQuote(remote))
 		b.WriteString(" ")
 		b.WriteString(shellQuote(raw))
 		b.WriteString("\n")
 		b.WriteString("fi\n")
 		if m.Normalize {
-			b.WriteString(m.renderNormalizeCommand(raw, local))
+			b.WriteString(m.renderNormalizeCommand(raw, local, remote))
 			b.WriteString("fi\n")
 		}
 	}
-	b.WriteString(m.renderProbeScript(s))
+	b.WriteString(m.renderProbeScriptBody(s))
 	if strings.TrimSpace(m.NotifyEmail) != "" {
 		b.WriteString("notify success\n")
 	}
 	return b.String()
 }
 
-func (m *Manager) renderNormalizeCommand(input, output string) string {
-	tmp := output + ".tmp"
+func (m *Manager) renderPrefetchFallbackFunctions(s *db.Stream) string {
+	var b strings.Builder
+	b.WriteString("seconds_until_stream() {\n")
+	b.WriteString("  next=\"$(/run/current-system/sw/bin/systemctl show ")
+	b.WriteString(shellQuote(m.timerName(s.ID)))
+	b.WriteString(" --property=NextElapseRealtime --value 2>/dev/null || true)\"\n")
+	b.WriteString("  if [ -z \"$next\" ] || [ \"$next\" = \"n/a\" ]; then echo 999999; return; fi\n")
+	b.WriteString("  next_epoch=\"$(/run/current-system/sw/bin/date -d \"$next\" +%s 2>/dev/null || true)\"\n")
+	b.WriteString("  now_epoch=\"$(/run/current-system/sw/bin/date +%s)\"\n")
+	b.WriteString("  if [ -z \"$next_epoch\" ]; then echo 999999; return; fi\n")
+	b.WriteString("  echo $((next_epoch - now_epoch))\n")
+	b.WriteString("}\n")
+	b.WriteString("should_use_raw_fallback() {\n")
+	b.WriteString("  seconds=\"$(seconds_until_stream)\"\n")
+	b.WriteString("  [ \"$seconds\" -le 7200 ]\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func (m *Manager) renderNormalizeCommand(input, output, remote string) string {
+	tmp := output + ".tmp.mp4"
 	var b strings.Builder
 	b.WriteString("echo ")
 	b.WriteString(shellQuote("prefetch: normalizing " + filepath.Base(input)))
@@ -537,7 +570,7 @@ func (m *Manager) renderNormalizeCommand(input, output string) string {
 	b.WriteString("/run/current-system/sw/bin/rm -f -- ")
 	b.WriteString(shellQuote(tmp))
 	b.WriteString("\n")
-	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -stats_period 30 -progress pipe:1 -y -i ")
+	b.WriteString("if /run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -stats_period 30 -progress pipe:1 -y -i ")
 	b.WriteString(shellQuote(input))
 	b.WriteString(" -map 0:v:0 -map 0:a:0 -dn -sn")
 	b.WriteString(" -c:v libx264 -preset veryfast -profile:v high -pix_fmt yuv420p")
@@ -556,12 +589,58 @@ func (m *Manager) renderNormalizeCommand(input, output string) string {
 	b.WriteString(shellQuote(m.normalizeAudioBitrate()))
 	b.WriteString(" -ar 48000 -ac 2 -movflags +faststart ")
 	b.WriteString(shellQuote(tmp))
-	b.WriteString("\n")
-	b.WriteString("/run/current-system/sw/bin/mv -f -- ")
+	b.WriteString(" && /run/current-system/sw/bin/mv -f -- ")
 	b.WriteString(shellQuote(tmp))
 	b.WriteString(" ")
 	b.WriteString(shellQuote(output))
+	b.WriteString(" && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
+	b.WriteString(shellQuote(output))
+	b.WriteString(" >/dev/null; then\n")
+	b.WriteString("  echo ")
+	b.WriteString(shellQuote("prefetch: normalized ready " + filepath.Base(output)))
 	b.WriteString("\n")
+	b.WriteString("else\n")
+	b.WriteString("  rc=$?\n")
+	b.WriteString("  echo ")
+	b.WriteString(shellQuote("prefetch: normalization failed for " + filepath.Base(input)))
+	b.WriteString("\n")
+	b.WriteString("  /run/current-system/sw/bin/rm -f -- ")
+	b.WriteString(shellQuote(tmp))
+	b.WriteString("\n")
+	b.WriteString("  if should_use_raw_fallback; then\n")
+	b.WriteString("    echo ")
+	b.WriteString(shellQuote("prefetch: using raw fallback for " + filepath.Base(input)))
+	b.WriteString("\n")
+	b.WriteString("    /run/current-system/sw/bin/rm -f -- ")
+	b.WriteString(shellQuote(output))
+	b.WriteString("\n")
+	b.WriteString("    if [ -f ")
+	b.WriteString(shellQuote(input))
+	b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
+	b.WriteString(shellQuote(input))
+	b.WriteString(" >/dev/null; then\n")
+	b.WriteString("      /run/current-system/sw/bin/cp -f -- ")
+	b.WriteString(shellQuote(input))
+	b.WriteString(" ")
+	b.WriteString(shellQuote(output))
+	b.WriteString("\n")
+	b.WriteString("    else\n")
+	b.WriteString("      /run/current-system/sw/bin/rclone copyto ")
+	b.WriteString(shellQuote(remote))
+	b.WriteString(" ")
+	b.WriteString(shellQuote(output))
+	b.WriteString("\n")
+	b.WriteString("    fi\n")
+	b.WriteString("    /run/current-system/sw/bin/ffprobe -v error -show_streams ")
+	b.WriteString(shellQuote(output))
+	b.WriteString(" >/dev/null\n")
+	b.WriteString("    /run/current-system/sw/bin/ls -lh ")
+	b.WriteString(shellQuote(output))
+	b.WriteString("\n")
+	b.WriteString("  else\n")
+	b.WriteString("    exit \"$rc\"\n")
+	b.WriteString("  fi\n")
+	b.WriteString("fi\n")
 	return b.String()
 }
 
@@ -579,15 +658,69 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 	b.WriteString("/run/current-system/sw/bin/find ")
 	b.WriteString(shellQuote(m.hlsPath(s.ID)))
 	b.WriteString(" -maxdepth 1 -type f -name 'segment-*.ts' -delete\n")
-	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -re -f concat -safe 0 -i ")
+	b.WriteString(m.renderNostrPublishCommand(s, "live"))
+	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -re -fflags +genpts -f concat -safe 0 -i ")
 	b.WriteString(shellQuote(m.playlistPath(s.ID)))
-	b.WriteString(" -c copy -tag:v 7 -tag:a 10 -f tee -map 0:v -map 0:a ")
+	b.WriteString(" -map 0:v:0 -map 0:a:0 -dn -sn")
+	b.WriteString(" -c copy -tag:v 7 -tag:a 10 -f tee ")
 	b.WriteString(shellQuote(m.buildTeeArg(s)))
 	b.WriteString("\n")
+	b.WriteString(m.renderNostrPublishCommand(s, "ended"))
 	if m.CleanupCache && m.needsPrefetch(s) {
 		b.WriteString(m.renderCleanupScriptBody(s))
 	}
 	return b.String()
+}
+
+func (m *Manager) renderNostrPublishCommand(s *db.Stream, status string) string {
+	if !s.NostrEnabled || s.NostrKey == nil || !s.NostrKey.Enabled || strings.TrimSpace(s.NostrKey.SecretPath) == "" {
+		return ""
+	}
+	if strings.TrimSpace(m.PublicBaseURL) == "" {
+		return ""
+	}
+	relays := nostrRelayURLs(s.NostrRelays)
+	if len(relays) == 0 {
+		return ""
+	}
+	title := strings.TrimSpace(s.NostrTitle)
+	if title == "" {
+		title = s.Name
+	}
+	bin := strings.TrimSpace(m.SelfPath)
+	if bin == "" {
+		bin = "/run/current-system/sw/bin/cmd"
+	}
+	streamingURL := strings.TrimRight(m.PublicBaseURL, "/") + fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID)
+	var b strings.Builder
+	b.WriteString(shellQuote(bin))
+	b.WriteString(" nostr-publish")
+	b.WriteString(" -key-file ")
+	b.WriteString(shellQuote(s.NostrKey.SecretPath))
+	b.WriteString(" -relays ")
+	b.WriteString(shellQuote(strings.Join(relays, ",")))
+	b.WriteString(" -status ")
+	b.WriteString(shellQuote(status))
+	b.WriteString(" -d ")
+	b.WriteString(shellQuote(fmt.Sprintf("streamctl-stream-%d", s.ID)))
+	b.WriteString(" -title ")
+	b.WriteString(shellQuote(title))
+	b.WriteString(" -summary ")
+	b.WriteString(shellQuote(s.NostrSummary))
+	b.WriteString(" -streaming ")
+	b.WriteString(shellQuote(streamingURL))
+	b.WriteString(" || true\n")
+	return b.String()
+}
+
+func nostrRelayURLs(relays []db.NostrRelay) []string {
+	var out []string
+	for _, relay := range relays {
+		if relay.Enabled && strings.TrimSpace(relay.URL) != "" {
+			out = append(out, strings.TrimSpace(relay.URL))
+		}
+	}
+	return out
 }
 
 func (m *Manager) buildTeeArg(s *db.Stream) string {
@@ -639,6 +772,12 @@ func (m *Manager) renderProbeScript(s *db.Stream) string {
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
 	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
+	b.WriteString(m.renderProbeScriptBody(s))
+	return b.String()
+}
+
+func (m *Manager) renderProbeScriptBody(s *db.Stream) string {
+	var b strings.Builder
 	for _, v := range s.Videos {
 		local := m.localClipPath(v)
 		b.WriteString("/run/current-system/sw/bin/ffprobe -v error -show_streams ")
@@ -738,10 +877,17 @@ func buildTeeArg(endpoints []db.Endpoint) string {
 			parts = append(parts, youtubeHLSTeeArg(e.RtmpURL))
 		default:
 			url := strings.TrimRight(e.RtmpURL, "/") + "/" + e.StreamKey
-			parts = append(parts, fmt.Sprintf("[f=flv:onfail=ignore]%s", url))
+			parts = append(parts, rtmpTeeArg(url))
 		}
 	}
 	return strings.Join(parts, "|")
+}
+
+func rtmpTeeArg(url string) string {
+	return fmt.Sprintf(
+		"[f=fifo:fifo_format=flv:queue_size=600:drop_pkts_on_overflow=1:attempt_recovery=1:recover_any_error=1:restart_with_keyframe=1:recovery_wait_time=5:max_recovery_attempts=100000:onfail=ignore]%s",
+		url,
+	)
 }
 
 func youtubeHLSTeeArg(template string) string {
@@ -796,11 +942,31 @@ func systemctl(args ...string) error {
 }
 
 func writeFile(path, contents string) error {
-	return os.WriteFile(path, []byte(contents), 0600)
+	return writeFileMode(path, contents, 0600)
 }
 
 func writeFileMode(path, contents string, mode os.FileMode) error {
-	return os.WriteFile(path, []byte(contents), mode)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := tmp.Write([]byte(contents)); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func appendError(existing string, err error) string {

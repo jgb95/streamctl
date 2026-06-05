@@ -130,6 +130,38 @@
 		{{end}}
 	</div>
 
+	<div class="field">
+		<label>Nostr live event</label>
+		<label class="field-inline">
+			<input type="checkbox" name="nostr_enabled" id="nostr_enabled" {{if and .Stream .Stream.NostrEnabled}}checked{{end}}>
+			<span>Publish NIP-53 live activity events</span>
+		</label>
+		{{if .NostrKeys}}
+		<div class="field" style="margin-top: 12px;">
+			<label>Key</label>
+			<select name="nostr_key_id">
+				<option value="">Select key</option>
+				{{range .NostrKeys}}
+				<option value="{{.ID}}" {{if and $.Stream (eq $.Stream.NostrKeyID .ID)}}selected{{end}} {{if not .Enabled}}disabled{{end}}>
+					{{.Name}} ({{.Npub}}){{if not .Enabled}} - disabled{{end}}
+				</option>
+				{{end}}
+			</select>
+		</div>
+		<div class="field">
+			<label>Title</label>
+			<input type="text" name="nostr_title" value="{{if .Stream}}{{.Stream.NostrTitle}}{{end}}" placeholder="{{if .Stream}}{{.Stream.Name}}{{else}}Stream title{{end}}">
+		</div>
+		<div class="field">
+			<label>Summary</label>
+			<textarea name="nostr_summary" rows="3">{{if .Stream}}{{.Stream.NostrSummary}}{{end}}</textarea>
+		</div>
+		<div class="hint">The live event points Nostr clients at this stream's public HLS playlist.</div>
+		{{else}}
+		<div class="muted">No Nostr keys configured. <a href="/nostr">Add one</a>.</div>
+		{{end}}
+	</div>
+
 	<div class="field field-inline">
 		<input type="checkbox" name="enabled" id="enabled" {{if or (not .Stream) .Stream.Enabled}}checked{{end}}>
 		<label for="enabled">Enabled</label>

@@ -31,13 +31,35 @@ CREATE TABLE IF NOT EXISTS endpoints (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS nostr_keys (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	pubkey TEXT NOT NULL,
+	npub TEXT NOT NULL,
+	secret_path TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS nostr_relays (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	url TEXT NOT NULL UNIQUE,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS streams (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,
 	schedule_type TEXT NOT NULL,         -- 'once' or 'recurring'
 	on_calendar TEXT NOT NULL,           -- systemd OnCalendar expression
+	nostr_enabled INTEGER NOT NULL DEFAULT 0,
+	nostr_key_id INTEGER,
+	nostr_title TEXT NOT NULL DEFAULT '',
+	nostr_summary TEXT NOT NULL DEFAULT '',
 	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (nostr_key_id) REFERENCES nostr_keys(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS stream_endpoints (
@@ -64,7 +86,13 @@ func (db *DB) Migrate() error {
 	if err := db.migrateLegacyVideoFile(); err != nil {
 		return err
 	}
-	return db.migrateEndpointType()
+	if err := db.migrateEndpointType(); err != nil {
+		return err
+	}
+	if err := db.migrateNostrStreamColumns(); err != nil {
+		return err
+	}
+	return db.seedDefaultNostrRelays()
 }
 
 // migrateLegacyVideoFile copies the old streams.video_file column into
@@ -108,6 +136,46 @@ func (db *DB) migrateEndpointType() error {
 	return err
 }
 
+func (db *DB) migrateNostrStreamColumns() error {
+	columns := []struct {
+		name string
+		sql  string
+	}{
+		{"nostr_enabled", `ALTER TABLE streams ADD COLUMN nostr_enabled INTEGER NOT NULL DEFAULT 0`},
+		{"nostr_key_id", `ALTER TABLE streams ADD COLUMN nostr_key_id INTEGER`},
+		{"nostr_title", `ALTER TABLE streams ADD COLUMN nostr_title TEXT NOT NULL DEFAULT ''`},
+		{"nostr_summary", `ALTER TABLE streams ADD COLUMN nostr_summary TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, col := range columns {
+		hasCol, err := db.hasColumn("streams", col.name)
+		if err != nil {
+			return err
+		}
+		if hasCol {
+			continue
+		}
+		if _, err := db.Exec(col.sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) seedDefaultNostrRelays() error {
+	defaults := []string{
+		"wss://relay.damus.io",
+		"wss://nos.lol",
+		"wss://relay.primal.net",
+		"wss://relay.nostr.band",
+	}
+	for _, url := range defaults {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO nostr_relays (url, enabled) VALUES (?, 1)`, url); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (db *DB) hasColumn(table, column string) (bool, error) {
 	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
@@ -149,9 +217,32 @@ type Stream struct {
 	Videos       []string // ordered playlist; populated on read
 	ScheduleType string
 	OnCalendar   string
+	NostrEnabled bool
+	NostrKeyID   int64
+	NostrTitle   string
+	NostrSummary string
 	Enabled      bool
 	CreatedAt    time.Time
 	Endpoints    []Endpoint // populated on read
+	NostrKey     *NostrKey
+	NostrRelays  []NostrRelay
+}
+
+type NostrKey struct {
+	ID         int64
+	Name       string
+	PubKey     string
+	Npub       string
+	SecretPath string
+	Enabled    bool
+	CreatedAt  time.Time
+}
+
+type NostrRelay struct {
+	ID        int64
+	URL       string
+	Enabled   bool
+	CreatedAt time.Time
 }
 
 // ---------- Endpoint queries ----------
@@ -217,7 +308,7 @@ func (db *DB) DeleteEndpoint(id int64) error {
 
 func (db *DB) ListStreams() ([]Stream, error) {
 	rows, err := db.Query(
-		`SELECT id, name, schedule_type, on_calendar, enabled, created_at FROM streams ORDER BY created_at DESC`,
+		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, enabled, created_at FROM streams ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -227,11 +318,16 @@ func (db *DB) ListStreams() ([]Stream, error) {
 	var streams []Stream
 	for rows.Next() {
 		var s Stream
-		var enabled int
-		if err := rows.Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &enabled, &s.CreatedAt); err != nil {
+		var enabled, nostrEnabled int
+		var nostrKeyID sql.NullInt64
+		if err := rows.Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &enabled, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		s.Enabled = enabled == 1
+		s.NostrEnabled = nostrEnabled == 1
+		if nostrKeyID.Valid {
+			s.NostrKeyID = nostrKeyID.Int64
+		}
 		streams = append(streams, s)
 	}
 	if err := rows.Err(); err != nil {
@@ -250,20 +346,28 @@ func (db *DB) ListStreams() ([]Stream, error) {
 			return nil, err
 		}
 		streams[i].Videos = vids
+		if err := db.populateNostr(&streams[i]); err != nil {
+			return nil, err
+		}
 	}
 	return streams, nil
 }
 
 func (db *DB) GetStream(id int64) (*Stream, error) {
 	var s Stream
-	var enabled int
+	var enabled, nostrEnabled int
+	var nostrKeyID sql.NullInt64
 	err := db.QueryRow(
-		`SELECT id, name, schedule_type, on_calendar, enabled, created_at FROM streams WHERE id = ?`, id,
-	).Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &enabled, &s.CreatedAt)
+		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, enabled, created_at FROM streams WHERE id = ?`, id,
+	).Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &enabled, &s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	s.Enabled = enabled == 1
+	s.NostrEnabled = nostrEnabled == 1
+	if nostrKeyID.Valid {
+		s.NostrKeyID = nostrKeyID.Int64
+	}
 
 	eps, err := db.endpointsForStream(s.ID)
 	if err != nil {
@@ -276,7 +380,28 @@ func (db *DB) GetStream(id int64) (*Stream, error) {
 		return nil, err
 	}
 	s.Videos = vids
+	if err := db.populateNostr(&s); err != nil {
+		return nil, err
+	}
 	return &s, nil
+}
+
+func (db *DB) populateNostr(s *Stream) error {
+	if s.NostrKeyID != 0 {
+		key, err := db.GetNostrKey(s.NostrKeyID)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil {
+			s.NostrKey = key
+		}
+	}
+	relays, err := db.EnabledNostrRelays()
+	if err != nil {
+		return err
+	}
+	s.NostrRelays = relays
+	return nil
 }
 
 func (db *DB) videosForStream(streamID int64) ([]string, error) {
@@ -332,8 +457,8 @@ func (db *DB) CreateStream(s *Stream, endpointIDs []int64, videos []string) (int
 	defer tx.Rollback()
 
 	res, err := tx.Exec(
-		`INSERT INTO streams (name, schedule_type, on_calendar, enabled) VALUES (?, ?, ?, ?)`,
-		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.Enabled),
+		`INSERT INTO streams (name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.NostrEnabled), nullInt64(s.NostrKeyID), s.NostrTitle, s.NostrSummary, boolInt(s.Enabled),
 	)
 	if err != nil {
 		return 0, err
@@ -365,8 +490,8 @@ func (db *DB) UpdateStream(s *Stream, endpointIDs []int64, videos []string) erro
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(
-		`UPDATE streams SET name = ?, schedule_type = ?, on_calendar = ?, enabled = ? WHERE id = ?`,
-		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.Enabled), s.ID,
+		`UPDATE streams SET name = ?, schedule_type = ?, on_calendar = ?, nostr_enabled = ?, nostr_key_id = ?, nostr_title = ?, nostr_summary = ?, enabled = ? WHERE id = ?`,
+		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.NostrEnabled), nullInt64(s.NostrKeyID), s.NostrTitle, s.NostrSummary, boolInt(s.Enabled), s.ID,
 	); err != nil {
 		return err
 	}
@@ -396,9 +521,139 @@ func (db *DB) DeleteStream(id int64) error {
 	return err
 }
 
+// ---------- Nostr queries ----------
+
+func (db *DB) ListNostrKeys() ([]NostrKey, error) {
+	rows, err := db.Query(`SELECT id, name, pubkey, npub, secret_path, enabled, created_at FROM nostr_keys ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []NostrKey
+	for rows.Next() {
+		var k NostrKey
+		var enabled int
+		if err := rows.Scan(&k.ID, &k.Name, &k.PubKey, &k.Npub, &k.SecretPath, &enabled, &k.CreatedAt); err != nil {
+			return nil, err
+		}
+		k.Enabled = enabled == 1
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) GetNostrKey(id int64) (*NostrKey, error) {
+	var k NostrKey
+	var enabled int
+	err := db.QueryRow(
+		`SELECT id, name, pubkey, npub, secret_path, enabled, created_at FROM nostr_keys WHERE id = ?`, id,
+	).Scan(&k.ID, &k.Name, &k.PubKey, &k.Npub, &k.SecretPath, &enabled, &k.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	k.Enabled = enabled == 1
+	return &k, nil
+}
+
+func (db *DB) CreateNostrKey(k *NostrKey) (int64, error) {
+	res, err := db.Exec(
+		`INSERT INTO nostr_keys (name, pubkey, npub, secret_path, enabled) VALUES (?, ?, ?, ?, ?)`,
+		k.Name, k.PubKey, k.Npub, k.SecretPath, boolInt(k.Enabled),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) UpdateNostrKey(k *NostrKey) error {
+	_, err := db.Exec(
+		`UPDATE nostr_keys SET name = ?, enabled = ? WHERE id = ?`,
+		k.Name, boolInt(k.Enabled), k.ID,
+	)
+	return err
+}
+
+func (db *DB) DeleteNostrKey(id int64) error {
+	_, err := db.Exec(`DELETE FROM nostr_keys WHERE id = ?`, id)
+	return err
+}
+
+func (db *DB) ListNostrRelays() ([]NostrRelay, error) {
+	rows, err := db.Query(`SELECT id, url, enabled, created_at FROM nostr_relays ORDER BY url`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []NostrRelay
+	for rows.Next() {
+		var relay NostrRelay
+		var enabled int
+		if err := rows.Scan(&relay.ID, &relay.URL, &enabled, &relay.CreatedAt); err != nil {
+			return nil, err
+		}
+		relay.Enabled = enabled == 1
+		out = append(out, relay)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) EnabledNostrRelays() ([]NostrRelay, error) {
+	rows, err := db.Query(`SELECT id, url, enabled, created_at FROM nostr_relays WHERE enabled = 1 ORDER BY url`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []NostrRelay
+	for rows.Next() {
+		var relay NostrRelay
+		var enabled int
+		if err := rows.Scan(&relay.ID, &relay.URL, &enabled, &relay.CreatedAt); err != nil {
+			return nil, err
+		}
+		relay.Enabled = enabled == 1
+		out = append(out, relay)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) CreateNostrRelay(relay *NostrRelay) (int64, error) {
+	res, err := db.Exec(
+		`INSERT INTO nostr_relays (url, enabled) VALUES (?, ?)`,
+		relay.URL, boolInt(relay.Enabled),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) UpdateNostrRelay(relay *NostrRelay) error {
+	_, err := db.Exec(
+		`UPDATE nostr_relays SET url = ?, enabled = ? WHERE id = ?`,
+		relay.URL, boolInt(relay.Enabled), relay.ID,
+	)
+	return err
+}
+
+func (db *DB) DeleteNostrRelay(id int64) error {
+	_, err := db.Exec(`DELETE FROM nostr_relays WHERE id = ?`, id)
+	return err
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1
 	}
 	return 0
+}
+
+func nullInt64(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
 }

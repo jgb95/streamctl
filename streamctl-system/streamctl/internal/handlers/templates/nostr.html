@@ -1,0 +1,109 @@
+{{define "nostr.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<h2>Nostr</h2>
+
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+<h2>Keys</h2>
+<form method="post" action="/nostr/keys/create" style="margin-bottom: 16px;">
+	<div class="field">
+		<label>Name</label>
+		<input type="text" name="name" placeholder="Main account" required>
+	</div>
+	<div class="field">
+		<label>nsec</label>
+		<input type="password" name="nsec" autocomplete="off" required>
+		<div class="hint">Stored as a local private key file; the nsec is not written to the database.</div>
+	</div>
+	<button type="submit" class="btn btn-primary">Add key</button>
+</form>
+
+{{if .Keys}}
+<table>
+	<thead>
+		<tr>
+			<th>Name</th>
+			<th>Public key</th>
+			<th>Status</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{{range .Keys}}
+		<tr>
+			<td>
+				<form id="nostr-key-{{.ID}}" method="post" action="/nostr/keys/update/{{.ID}}" style="background: none; border: none; padding: 0;">
+					<input type="text" name="name" value="{{.Name}}" style="width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; border-radius: 3px;">
+				</form>
+			</td>
+			<td><code>{{.Npub}}</code></td>
+			<td>
+				<label class="field-inline">
+					<input type="checkbox" name="enabled" form="nostr-key-{{.ID}}" {{if .Enabled}}checked{{end}}>
+					<span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+				</label>
+			</td>
+			<td>
+				<div class="actions">
+					<button type="submit" form="nostr-key-{{.ID}}" class="btn">Save</button>
+					<form method="post" action="/nostr/keys/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this Nostr key?');">
+						<button type="submit" class="btn btn-danger">Delete</button>
+					</form>
+				</div>
+			</td>
+		</tr>
+		{{end}}
+	</tbody>
+</table>
+{{else}}
+<p class="muted">No Nostr keys configured.</p>
+{{end}}
+
+<h2>Relays</h2>
+<form method="post" action="/nostr/relays/create" style="margin-bottom: 16px;">
+	<div class="field">
+		<label>Relay URL</label>
+		<input type="text" name="url" placeholder="wss://relay.example.com" required>
+	</div>
+	<button type="submit" class="btn btn-primary">Add relay</button>
+</form>
+
+{{if .Relays}}
+<table>
+	<thead>
+		<tr>
+			<th>Relay</th>
+			<th>Status</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{{range .Relays}}
+		<tr>
+			<td>
+				<form id="nostr-relay-{{.ID}}" method="post" action="/nostr/relays/update/{{.ID}}" style="background: none; border: none; padding: 0;">
+					<input type="text" name="url" value="{{.URL}}" style="width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; border-radius: 3px;">
+				</form>
+			</td>
+			<td>
+				<label class="field-inline">
+					<input type="checkbox" name="enabled" form="nostr-relay-{{.ID}}" {{if .Enabled}}checked{{end}}>
+					<span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+				</label>
+			</td>
+			<td>
+				<div class="actions">
+					<button type="submit" form="nostr-relay-{{.ID}}" class="btn">Save</button>
+					<form method="post" action="/nostr/relays/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this relay?');">
+						<button type="submit" class="btn btn-danger">Delete</button>
+					</form>
+				</div>
+			</td>
+		</tr>
+		{{end}}
+	</tbody>
+</table>
+{{else}}
+<p class="muted">No relays configured.</p>
+{{end}}
+{{end}}
