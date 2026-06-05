@@ -7,7 +7,9 @@ SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 DIGITALOCEAN_TOKEN := $(strip $(DIGITAL_OCEAN_TOKEN))
+DIGITALOCEAN_GPU_TOKEN := $(strip $(or $(DIGITAL_OCEAN_GPU_TOKEN),$(shell doctl auth token --context streamctl-token 2>/dev/null)))
 export DIGITALOCEAN_TOKEN
+export DIGITALOCEAN_GPU_TOKEN
 
 # Cache the droplet's IP across recipes that need it.
 # This shells out to terraform once per make invocation, not per recipe.
@@ -15,8 +17,11 @@ IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
 
 .PHONY: help init plan create ip wait-for-nixos pull-hardware-config \
         bootstrap-secret deploy deploy-local-build deploy-dry update \
-        build shell run-local \
-        ssh logs timers destroy check-token check-ip stream-logs upload install-rclone-config maybe-install-rclone-config backup-db
+	build shell run-local \
+        ssh logs timers destroy check-token check-gpu-token check-ip stream-logs upload \
+        install-rclone-config maybe-install-rclone-config \
+        install-digitalocean-gpu-token maybe-install-digitalocean-gpu-token backup-db \
+        gpu-upload gpu-transcode
 
 # ---------- help ----------
 
@@ -24,11 +29,17 @@ help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} \
 	      /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-# Internal sanity check: bail if doctl didn't return a token.
+# Internal sanity check: bail if no DigitalOcean token is configured.
 check-token:
 	@if [ -z "$${DIGITALOCEAN_TOKEN:-}" ]; then \
-	  echo "ERROR: doctl auth token returned nothing." >&2; \
-	  echo "Run 'doctl auth init' first." >&2; \
+	  echo "ERROR: DIGITAL_OCEAN_TOKEN is not set." >&2; \
+	  exit 1; \
+	fi
+
+# Internal sanity check: bail if no managed GPU worker token is configured.
+check-gpu-token:
+	@if [ -z "$${DIGITALOCEAN_GPU_TOKEN:-}" ]; then \
+	  echo "ERROR: DIGITAL_OCEAN_GPU_TOKEN is not set." >&2; \
 	  exit 1; \
 	fi
 
@@ -58,6 +69,7 @@ create: check-token ## Create the droplet via Terraform (~1 min + ~5 min for nix
 	@echo "  make pull-hardware-config"
 	@echo "  make bootstrap-secret"
 	@echo "  make deploy"
+	@echo "If DIGITAL_OCEAN_GPU_TOKEN is set, deploy will also install it for managed GPU workers."
 
 ip: check-ip ## Print the droplet's IPv4 address.
 	@echo "$(IP)"
@@ -112,12 +124,14 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
 	  --build-host root@$(IP) \
           --fast
 	@$(MAKE) maybe-install-rclone-config
+	@$(MAKE) maybe-install-digitalocean-gpu-token
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
 	nixos-rebuild switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP)
 	@$(MAKE) maybe-install-rclone-config
+	@$(MAKE) maybe-install-digitalocean-gpu-token
 
 deploy-dry: check-ip ## Test the config without switching (validation only).
 	nixos-rebuild dry-activate \
@@ -200,6 +214,41 @@ maybe-install-rclone-config: check-ip ## Install local rclone.conf when present;
 	else \
 	  echo "No local rclone.conf found; skipping rclone config install."; \
 	fi
+
+install-digitalocean-gpu-token: check-ip check-gpu-token ## Install DIGITAL_OCEAN_GPU_TOKEN on the droplet for managed GPU workers.
+	@printf '%s\n' "$${DIGITALOCEAN_GPU_TOKEN}" | ssh root@$(IP) \
+	  'install -d -m 0750 /var/lib/streamctl && \
+	   install -m 0400 -o root -g root /dev/stdin /var/lib/streamctl/digitalocean-token'
+	@echo "Installed DigitalOcean GPU token at /var/lib/streamctl/digitalocean-token."
+
+maybe-install-digitalocean-gpu-token: check-ip ## Install DIGITAL_OCEAN_GPU_TOKEN when present; skip otherwise.
+	@if [ -n "$${DIGITALOCEAN_GPU_TOKEN:-}" ]; then \
+	  $(MAKE) install-digitalocean-gpu-token; \
+	else \
+	  echo "DIGITAL_OCEAN_GPU_TOKEN is not set; skipping DigitalOcean GPU token install."; \
+	fi
+
+# Usage: make gpu-upload GPU_HOST=ubuntu@1.2.3.4
+gpu-upload: ## Upload the NVENC transcode worker script and rclone config to a GPU VM.
+	@if [ -z "$(GPU_HOST)" ]; then \
+	  echo "Usage: make gpu-upload GPU_HOST=<user@host>" >&2; \
+	  exit 1; \
+	fi
+	@if [ ! -f rclone.conf ]; then \
+	  echo "ERROR: ./rclone.conf not found." >&2; \
+	  exit 1; \
+	fi
+	scp scripts/transcode-nvenc.sh "$(GPU_HOST):/home/ubuntu/transcode-nvenc.sh"
+	scp rclone.conf "$(GPU_HOST):/home/ubuntu/rclone.conf"
+	ssh "$(GPU_HOST)" 'chmod +x /home/ubuntu/transcode-nvenc.sh'
+
+# Usage: make gpu-transcode GPU_HOST=ubuntu@1.2.3.4 FILE=vienna/recordings/edits/livestream/file.mp4
+gpu-transcode: ## Start one NVENC transcode job on the GPU VM.
+	@if [ -z "$(GPU_HOST)" ] || [ -z "$(FILE)" ]; then \
+	  echo "Usage: make gpu-transcode GPU_HOST=<user@host> FILE=<spaces-path>" >&2; \
+	  exit 1; \
+	fi
+	ssh "$(GPU_HOST)" 'RCLONE_CONFIG=/home/ubuntu/rclone.conf /home/ubuntu/transcode-nvenc.sh "$(FILE)"'
 
 # ---------- teardown ----------
 

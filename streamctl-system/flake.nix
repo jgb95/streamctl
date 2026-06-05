@@ -13,7 +13,7 @@
         pname = "streamctl";
         version = "0.1.0";
         src = ./streamctl;
-        vendorHash = "sha256-7hRezOBcjB2wsx/SwV519wg3Azh+0kHMcAoc9aYPM3A=";
+        vendorHash = "sha256-vJu/Xj72VfUPgbx3HdA673NCmjzv2B/s3qMrBr+QCkE=";
         subPackages = [ "cmd" ];
         meta = with pkgs.lib; {
           description = "Schedule pre-recorded RTMP streams via systemd";
@@ -64,6 +64,78 @@
               type = lib.types.str;
               default = "/var/lib/streamctl/hls";
               description = "Directory where generated HLS playlists and segments are written.";
+            };
+
+            nostrKeyDir = lib.mkOption {
+              type = lib.types.str;
+              default = "/var/lib/streamctl/nostr-keys";
+              description = "Directory where Nostr private keys are stored.";
+            };
+
+            publicBaseURL = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Public HTTPS base URL used for HLS links in Nostr live events.";
+            };
+
+            gpuWorkerHost = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Optional SSH target for a GPU transcode worker, e.g. ubuntu@1.2.3.4.";
+            };
+
+            gpuWorkerCommand = lib.mkOption {
+              type = lib.types.str;
+              default = "/root/transcode-nvenc.sh";
+              description = "Command path on the GPU worker that accepts one Spaces object path.";
+            };
+
+            digitalOceanTokenFile = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Optional DigitalOcean API token file. Enables creating/destroying GPU worker Droplets from the web UI.";
+            };
+
+            gpuDropletName = lib.mkOption {
+              type = lib.types.str;
+              default = "streamctl-gpu-worker";
+              description = "Name for the managed GPU worker Droplet.";
+            };
+
+            gpuDropletRegion = lib.mkOption {
+              type = lib.types.str;
+              default = "nyc2";
+              description = "DigitalOcean region for the managed GPU worker.";
+            };
+
+            gpuDropletSize = lib.mkOption {
+              type = lib.types.str;
+              default = "gpu-h100x1-80gb";
+              description = "DigitalOcean size slug for the managed GPU worker.";
+            };
+
+            gpuDropletImage = lib.mkOption {
+              type = lib.types.str;
+              default = "ubuntu-24-04-x64";
+              description = "DigitalOcean image slug for the managed GPU worker.";
+            };
+
+            gpuSSHKeyName = lib.mkOption {
+              type = lib.types.str;
+              default = "streamctl-deploy";
+              description = "DigitalOcean SSH key name, fingerprint, or ID to install on managed GPU workers.";
+            };
+
+            gpuWorkerUser = lib.mkOption {
+              type = lib.types.str;
+              default = "root";
+              description = "SSH user for managed GPU workers.";
+            };
+
+            gpuDestroyAfterJob = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Destroy the managed GPU worker Droplet after a successful transcode job.";
             };
 
             remote = lib.mkOption {
@@ -156,6 +228,7 @@
               "d ${cfg.videoDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.cacheDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.hlsDir} 0750 ${cfg.user} ${cfg.group} - -"
+              "d ${cfg.nostrKeyDir} 0750 ${cfg.user} ${cfg.group} - -"
             ];
 
             systemd.services.streamctl = {
@@ -163,7 +236,7 @@
               after = [ "network.target" ];
               wantedBy = [ "multi-user.target" ];
 
-              path = [ pkgs.systemd pkgs.ffmpeg pkgs.rclone pkgs.msmtp ];
+              path = [ pkgs.systemd pkgs.ffmpeg pkgs.rclone pkgs.msmtp pkgs.openssh ];
 
               serviceConfig = {
                 Type = "simple";
@@ -178,6 +251,18 @@
                     -video-dir=${cfg.videoDir} \
                     -cache-dir=${cfg.cacheDir} \
                     -hls-dir=${cfg.hlsDir} \
+                    -nostr-key-dir=${cfg.nostrKeyDir} \
+                    -public-base-url=${cfg.publicBaseURL} \
+                    -gpu-worker-host=${cfg.gpuWorkerHost} \
+                    -gpu-worker-command=${cfg.gpuWorkerCommand} \
+                    -do-token-file=${cfg.digitalOceanTokenFile} \
+                    -gpu-droplet-name=${cfg.gpuDropletName} \
+                    -gpu-droplet-region=${cfg.gpuDropletRegion} \
+                    -gpu-droplet-size=${cfg.gpuDropletSize} \
+                    -gpu-droplet-image=${cfg.gpuDropletImage} \
+                    -gpu-ssh-key-name=${cfg.gpuSSHKeyName} \
+                    -gpu-worker-user=${cfg.gpuWorkerUser} \
+                    -gpu-destroy-after-job=${lib.boolToString cfg.gpuDestroyAfterJob} \
                     -remote=${cfg.remote} \
                     -rclone-config=${cfg.rcloneConfigFile} \
                     -notify-email=${cfg.notificationEmail} \
@@ -223,6 +308,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             go
+            git
             gopls
             sqlite
             ffmpeg

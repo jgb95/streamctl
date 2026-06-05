@@ -62,6 +62,9 @@
     rcloneConfigFile = "/var/lib/streamctl/rclone.conf";
     notificationEmail = "hello@btcpp.dev";
     cleanupCache = true;
+    publicBaseURL = "https://stream.btcpp.dev";
+    digitalOceanTokenFile = "/var/lib/streamctl/digitalocean-token";
+    gpuDestroyAfterJob = true;
     # videoDir defaults to /var/lib/streamctl/videos — that's where you scp event files.
     # cacheDir defaults to /var/lib/streamctl/cache — remote clips are prefetched there.
   };
