@@ -121,7 +121,7 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
 	  --flake .#streamctl \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP) \
-          --fast
+          --no-reexec
 	@$(MAKE) maybe-install-rclone-config
 	@$(MAKE) maybe-install-digitalocean-gpu-token
 
