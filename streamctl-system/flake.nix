@@ -3,10 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, flake-utils }:
     let
       # The streamctl Go package, parameterized by pkgs so it works on any system.
       streamctlPackage = pkgs: pkgs.buildGoModule {
@@ -300,6 +301,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        unstablePkgs = nixpkgs-unstable.legacyPackages.${system};
       in
       {
         packages.default = streamctlPackage pkgs;
@@ -313,7 +315,7 @@
             sqlite
             ffmpeg
             terraform
-            doctl
+            unstablePkgs.doctl
             gnumake
             openssl
             nixos-rebuild
