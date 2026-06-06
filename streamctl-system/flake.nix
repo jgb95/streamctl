@@ -104,7 +104,7 @@
 
             gpuDropletRegion = lib.mkOption {
               type = lib.types.str;
-              default = "nyc2";
+              default = "nyc3";
               description = "DigitalOcean region for the managed GPU worker.";
             };
 

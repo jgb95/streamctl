@@ -43,7 +43,7 @@ func main() {
 		gpuWorkerCommand   = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		doTokenFile        = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
 		gpuDropletName     = flag.String("gpu-droplet-name", "streamctl-gpu-worker", "managed GPU Droplet name")
-		gpuDropletRegion   = flag.String("gpu-droplet-region", "nyc2", "managed GPU Droplet region")
+		gpuDropletRegion   = flag.String("gpu-droplet-region", "nyc3", "managed GPU Droplet region")
 		gpuDropletSize     = flag.String("gpu-droplet-size", "gpu-h100x1-80gb", "managed GPU Droplet size slug")
 		gpuDropletImage    = flag.String("gpu-droplet-image", "ubuntu-24-04-x64", "managed GPU Droplet image slug")
 		gpuSSHKeyName      = flag.String("gpu-ssh-key-name", "streamctl-deploy", "DigitalOcean SSH key name to install on managed GPU Droplets")

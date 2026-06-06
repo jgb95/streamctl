@@ -48,13 +48,13 @@
 	{{if .GPUAvailability.Error}}<div class="inline-error">{{.GPUAvailability.Error}}</div>{{end}}
 	{{if .GPUAvailability.Sizes}}
 	<details style="margin-top: 12px;">
-		<summary class="muted" style="cursor: pointer;">Available GPU sizes and regions</summary>
+		<summary class="muted" style="cursor: pointer;">Available GPU sizes in {{.GPUAvailability.DefaultRegion}}</summary>
 		<table style="margin-top: 10px;">
 			<thead>
 				<tr>
 					<th>Size</th>
 					<th>Description</th>
-					<th>Regions</th>
+					<th>Region</th>
 				</tr>
 			</thead>
 			<tbody>

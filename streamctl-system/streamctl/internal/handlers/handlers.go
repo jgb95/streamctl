@@ -1325,7 +1325,7 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	size := firstNonEmptyString(r.FormValue("size"), h.GPUDropletSize, "gpu-h100x1-80gb")
-	region := firstNonEmptyString(r.FormValue("region"), h.GPUDropletRegion, "nyc2")
+	region := firstNonEmptyString(r.FormValue("region"), h.GPUDropletRegion, "nyc3")
 	if err := h.validateGPUSizeRegion(r.Context(), client, size, region); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1368,7 +1368,7 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
 	view := gpuAvailabilityView{
 		DefaultSize:   firstNonEmptyString(h.GPUDropletSize, "gpu-h100x1-80gb"),
-		DefaultRegion: firstNonEmptyString(h.GPUDropletRegion, "nyc2"),
+		DefaultRegion: firstNonEmptyString(h.GPUDropletRegion, "nyc3"),
 	}
 	if strings.TrimSpace(h.DOTokenFile) == "" {
 		return view
@@ -1384,7 +1384,7 @@ func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
 		return view
 	}
 	for _, size := range sizes {
-		if !isGPUSize(size) {
+		if !isGPUSize(size) || !containsString(size.Regions, view.DefaultRegion) {
 			continue
 		}
 		regions := append([]string(nil), size.Regions...)
