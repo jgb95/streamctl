@@ -21,6 +21,18 @@
 			{{else}}
 				<span class="badge badge-inactive">not created</span>
 				<form method="post" action="/gpu-worker/create" style="background: none; border: none; padding: 0; margin-left: auto;">
+					{{if .GPUAvailability.Sizes}}
+					<select id="gpu-size" name="size" style="margin-right: 8px;">
+						{{range .GPUAvailability.Sizes}}
+						<option value="{{.Slug}}" data-regions="{{range .Regions}}{{.}},{{end}}" {{if eq .Slug $.GPUAvailability.SelectedSize}}selected{{end}}>{{.Slug}}</option>
+						{{end}}
+					</select>
+					<select id="gpu-region" name="region" data-default-region="{{.GPUAvailability.DefaultRegion}}" style="margin-right: 8px;">
+						{{range .GPUAvailability.SelectedRegions}}
+						<option value="{{.}}" {{if eq . $.GPUAvailability.DefaultRegion}}selected{{end}}>{{.}}</option>
+						{{end}}
+					</select>
+					{{end}}
 					<button type="submit" class="btn btn-primary">Create GPU</button>
 				</form>
 			{{end}}
@@ -33,6 +45,32 @@
 	</div>
 	{{if .GPUWorker.Error}}<div class="inline-error">{{.GPUWorker.Error}}</div>{{end}}
 	{{if not .GPUConfigured}}<div class="hint">Files can be inspected, but processing buttons are disabled until a GPU worker is configured.</div>{{end}}
+	{{if .GPUAvailability.Error}}<div class="inline-error">{{.GPUAvailability.Error}}</div>{{end}}
+	{{if .GPUAvailability.Sizes}}
+	<details style="margin-top: 12px;">
+		<summary class="muted" style="cursor: pointer;">Available GPU sizes and regions</summary>
+		<table style="margin-top: 10px;">
+			<thead>
+				<tr>
+					<th>Size</th>
+					<th>Description</th>
+					<th>Regions</th>
+				</tr>
+			</thead>
+			<tbody>
+				{{range .GPUAvailability.Sizes}}
+				<tr>
+					<td><code>{{.Slug}}</code>{{if .DefaultSize}} <span class="badge badge-active">default</span>{{end}}</td>
+					<td>{{.Description}}</td>
+					<td>
+						{{range .Regions}}<code>{{.}}</code> {{end}}
+					</td>
+				</tr>
+				{{end}}
+			</tbody>
+		</table>
+	</details>
+	{{end}}
 	{{if .GPUStatus.Error}}<div class="inline-error">{{.GPUStatus.Error}}</div>{{end}}
 	{{if .GPUStatus.Available}}
 	<div class="unit-meta" style="border-bottom: 0; padding-left: 0; padding-right: 0;">
@@ -117,4 +155,23 @@
 {{else}}
 <p class="muted">No files found under <code>{conf}/recordings/edits/livestream/</code>.</p>
 {{end}}
+<script>
+const gpuSize = document.getElementById('gpu-size');
+const gpuRegion = document.getElementById('gpu-region');
+if (gpuSize && gpuRegion) {
+	gpuSize.addEventListener('change', () => {
+		const regions = (gpuSize.selectedOptions[0]?.dataset.regions || '').split(',').filter(Boolean);
+		const preferred = gpuRegion.dataset.defaultRegion || '';
+		gpuRegion.innerHTML = '';
+		for (const region of regions) {
+			const option = document.createElement('option');
+			option.value = region;
+			option.textContent = region;
+			option.selected = region === preferred;
+			gpuRegion.appendChild(option);
+		}
+		if (!gpuRegion.value && gpuRegion.options.length) gpuRegion.options[0].selected = true;
+	});
+}
+</script>
 {{end}}

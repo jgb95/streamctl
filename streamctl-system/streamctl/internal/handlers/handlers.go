@@ -845,6 +845,23 @@ type gpuStatusView struct {
 	Error     string
 }
 
+type gpuSizeView struct {
+	Slug          string
+	Description   string
+	Regions       []string
+	DefaultSize   bool
+	DefaultRegion bool
+}
+
+type gpuAvailabilityView struct {
+	Sizes           []gpuSizeView
+	DefaultSize     string
+	DefaultRegion   string
+	SelectedSize    string
+	SelectedRegions []string
+	Error           string
+}
+
 func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(h.Remote) == "" {
 		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
@@ -857,15 +874,17 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	worker := h.gpuWorkerView(r.Context())
 	gpuStatus := h.gpuStatus(r.Context(), worker)
+	gpuAvailability := h.gpuAvailability(r.Context())
 	h.render(w, "livestream_files.html", map[string]any{
-		"Files":         files,
-		"GPUConfigured": worker.Configured,
-		"GPUWorkerHost": h.GPUWorkerHost,
-		"GPUWorker":     worker,
-		"GPUStatus":     gpuStatus,
-		"Started":       r.URL.Query().Get("started"),
-		"Job":           r.URL.Query().Get("job"),
-		"Error":         r.URL.Query().Get("err"),
+		"Files":           files,
+		"GPUConfigured":   worker.Configured,
+		"GPUWorkerHost":   h.GPUWorkerHost,
+		"GPUWorker":       worker,
+		"GPUStatus":       gpuStatus,
+		"GPUAvailability": gpuAvailability,
+		"Started":         r.URL.Query().Get("started"),
+		"Job":             r.URL.Query().Get("job"),
+		"Error":           r.URL.Query().Get("err"),
 	})
 }
 
@@ -1301,6 +1320,16 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	size := firstNonEmptyString(r.FormValue("size"), h.GPUDropletSize, "gpu-h100x1-80gb")
+	region := firstNonEmptyString(r.FormValue("region"), h.GPUDropletRegion, "nyc2")
+	if err := h.validateGPUSizeRegion(r.Context(), client, size, region); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	existing, err := client.ListDropletsByTag(r.Context(), h.gpuWorkerTag())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -1322,8 +1351,8 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := client.CreateDroplet(r.Context(), doclient.CreateDropletRequest{
 		Name:       h.gpuDropletName(),
-		Region:     firstNonEmptyString(h.GPUDropletRegion, "nyc2"),
-		Size:       firstNonEmptyString(h.GPUDropletSize, "gpu-h100x1-80gb"),
+		Region:     region,
+		Size:       size,
 		Image:      firstNonEmptyString(h.GPUDropletImage, "ubuntu-24-04-x64"),
 		SSHKeys:    []string{key.Fingerprint},
 		Monitoring: true,
@@ -1334,6 +1363,90 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+}
+
+func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
+	view := gpuAvailabilityView{
+		DefaultSize:   firstNonEmptyString(h.GPUDropletSize, "gpu-h100x1-80gb"),
+		DefaultRegion: firstNonEmptyString(h.GPUDropletRegion, "nyc2"),
+	}
+	if strings.TrimSpace(h.DOTokenFile) == "" {
+		return view
+	}
+	client, err := h.doClient()
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	sizes, err := client.ListSizes(ctx)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	for _, size := range sizes {
+		if !isGPUSize(size) {
+			continue
+		}
+		regions := append([]string(nil), size.Regions...)
+		sort.Strings(regions)
+		view.Sizes = append(view.Sizes, gpuSizeView{
+			Slug:          size.Slug,
+			Description:   size.Description,
+			Regions:       regions,
+			DefaultSize:   size.Slug == view.DefaultSize,
+			DefaultRegion: containsString(regions, view.DefaultRegion),
+		})
+	}
+	sort.Slice(view.Sizes, func(i, j int) bool {
+		return view.Sizes[i].Slug < view.Sizes[j].Slug
+	})
+	for _, size := range view.Sizes {
+		if size.Slug == view.DefaultSize {
+			view.SelectedSize = size.Slug
+			view.SelectedRegions = size.Regions
+			return view
+		}
+	}
+	if len(view.Sizes) > 0 {
+		view.SelectedSize = view.Sizes[0].Slug
+		view.SelectedRegions = view.Sizes[0].Regions
+	}
+	return view
+}
+
+func (h *Handler) validateGPUSizeRegion(ctx context.Context, client *doclient.Client, size, region string) error {
+	sizes, err := client.ListSizes(ctx)
+	if err != nil {
+		return fmt.Errorf("listing GPU sizes: %w", err)
+	}
+	for _, candidate := range sizes {
+		if candidate.Slug != size {
+			continue
+		}
+		if !isGPUSize(candidate) {
+			return fmt.Errorf("size %s is not a GPU size", size)
+		}
+		if !containsString(candidate.Regions, region) {
+			return fmt.Errorf("size %s is not available in region %s; available regions: %s", size, region, strings.Join(candidate.Regions, ", "))
+		}
+		return nil
+	}
+	return fmt.Errorf("GPU size %s not found", size)
+}
+
+func isGPUSize(size doclient.Size) bool {
+	slug := strings.ToLower(size.Slug)
+	desc := strings.ToLower(size.Description)
+	return strings.Contains(slug, "gpu") || strings.Contains(desc, "gpu")
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) gpuWorkerDestroy(w http.ResponseWriter, r *http.Request) {

@@ -49,6 +49,18 @@ type SSHKey struct {
 	PublicKey   string `json:"public_key"`
 }
 
+type Size struct {
+	Slug         string   `json:"slug"`
+	Description  string   `json:"description"`
+	Memory       int64    `json:"memory"`
+	VCPUs        int64    `json:"vcpus"`
+	Disk         int64    `json:"disk"`
+	PriceHourly  float64  `json:"price_hourly"`
+	PriceMonthly float64  `json:"price_monthly"`
+	Regions      []string `json:"regions"`
+	Available    bool     `json:"available"`
+}
+
 type CreateDropletRequest struct {
 	Name       string   `json:"name"`
 	Region     string   `json:"region"`
@@ -107,6 +119,27 @@ func (c *Client) ListSSHKeys(ctx context.Context) ([]SSHKey, error) {
 			return nil, err
 		}
 		all = append(all, resp.Keys...)
+		path = strings.TrimPrefix(resp.Links.Pages.Next, apiBase)
+	}
+	return all, nil
+}
+
+func (c *Client) ListSizes(ctx context.Context) ([]Size, error) {
+	var all []Size
+	path := "/sizes?per_page=200"
+	for path != "" {
+		var resp struct {
+			Sizes []Size `json:"sizes"`
+			Links struct {
+				Pages struct {
+					Next string `json:"next"`
+				} `json:"pages"`
+			} `json:"links"`
+		}
+		if err := c.request(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Sizes...)
 		path = strings.TrimPrefix(resp.Links.Pages.Next, apiBase)
 	}
 	return all, nil
