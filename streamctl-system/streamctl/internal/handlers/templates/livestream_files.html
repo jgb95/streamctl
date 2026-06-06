@@ -24,7 +24,7 @@
 					{{if .GPUAvailability.Sizes}}
 					<select id="gpu-size" name="size" style="margin-right: 8px;">
 						{{range .GPUAvailability.Sizes}}
-						<option value="{{.Slug}}" data-regions="{{range .Regions}}{{.}},{{end}}" {{if eq .Slug $.GPUAvailability.SelectedSize}}selected{{end}}>{{.Slug}}</option>
+						<option value="{{.Slug}}" data-regions="{{range .Regions}}{{.}},{{end}}" {{if eq .Slug $.GPUAvailability.SelectedSize}}selected{{end}}>{{.Slug}} - ${{printf "%.2f" .PriceHourly}}/hr</option>
 						{{end}}
 					</select>
 					<select id="gpu-region" name="region" data-default-region="{{.GPUAvailability.DefaultRegion}}" style="margin-right: 8px;">
@@ -54,6 +54,7 @@
 				<tr>
 					<th>Size</th>
 					<th>Description</th>
+					<th>Cost</th>
 					<th>Region</th>
 				</tr>
 			</thead>
@@ -62,6 +63,7 @@
 				<tr>
 					<td><code>{{.Slug}}</code>{{if .DefaultSize}} <span class="badge badge-active">default</span>{{end}}</td>
 					<td>{{.Description}}</td>
+					<td>${{printf "%.2f" .PriceHourly}}/hr</td>
 					<td>
 						{{range .Regions}}<code>{{.}}</code> {{end}}
 					</td>

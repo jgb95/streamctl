@@ -848,6 +848,7 @@ type gpuStatusView struct {
 type gpuSizeView struct {
 	Slug          string
 	Description   string
+	PriceHourly   float64
 	Regions       []string
 	DefaultSize   bool
 	DefaultRegion bool
@@ -1392,6 +1393,7 @@ func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
 		view.Sizes = append(view.Sizes, gpuSizeView{
 			Slug:          size.Slug,
 			Description:   size.Description,
+			PriceHourly:   size.PriceHourly,
 			Regions:       regions,
 			DefaultSize:   size.Slug == view.DefaultSize,
 			DefaultRegion: containsString(regions, view.DefaultRegion),
