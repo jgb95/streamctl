@@ -91,6 +91,16 @@ CREATE TABLE IF NOT EXISTS gpu_job_logs (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS gpu_job_queue (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	raw_path TEXT NOT NULL UNIQUE,
+	unit_name TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'queued',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	started_at DATETIME,
+	finished_at DATETIME
+);
 `
 
 func (db *DB) Migrate() error {
@@ -271,6 +281,16 @@ type GPUJobLog struct {
 	Error       string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type GPUJobQueueItem struct {
+	ID         int64
+	RawPath    string
+	UnitName   string
+	Status     string
+	CreatedAt  time.Time
+	StartedAt  *time.Time
+	FinishedAt *time.Time
 }
 
 // ---------- Endpoint queries ----------
@@ -605,6 +625,123 @@ func (db *DB) ListGPUJobLogs(limit int) ([]GPUJobLog, error) {
 		out = append(out, job)
 	}
 	return out, rows.Err()
+}
+
+// ---------- GPU queue queries ----------
+
+func (db *DB) EnqueueGPUJob(rawPath string) (*GPUJobQueueItem, error) {
+	_, err := db.Exec(`
+		INSERT INTO gpu_job_queue (raw_path, status)
+		VALUES (?, 'queued')
+		ON CONFLICT(raw_path) DO UPDATE SET
+			status = CASE
+				WHEN gpu_job_queue.status IN ('finished', 'failed', 'cancelled') THEN 'queued'
+				ELSE gpu_job_queue.status
+			END,
+			unit_name = CASE
+				WHEN gpu_job_queue.status IN ('finished', 'failed', 'cancelled') THEN ''
+				ELSE gpu_job_queue.unit_name
+			END,
+			started_at = CASE
+				WHEN gpu_job_queue.status IN ('finished', 'failed', 'cancelled') THEN NULL
+				ELSE gpu_job_queue.started_at
+			END,
+			finished_at = CASE
+				WHEN gpu_job_queue.status IN ('finished', 'failed', 'cancelled') THEN NULL
+				ELSE gpu_job_queue.finished_at
+			END
+	`, rawPath)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetGPUQueueItemByRawPath(rawPath)
+}
+
+func (db *DB) GetGPUQueueItemByRawPath(rawPath string) (*GPUJobQueueItem, error) {
+	var item GPUJobQueueItem
+	var startedAt, finishedAt sql.NullTime
+	err := db.QueryRow(`
+		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		FROM gpu_job_queue WHERE raw_path = ?
+	`, rawPath).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt)
+	if err != nil {
+		return nil, err
+	}
+	item.StartedAt = nullTimePtr(startedAt)
+	item.FinishedAt = nullTimePtr(finishedAt)
+	return &item, nil
+}
+
+func (db *DB) NextQueuedGPUJob() (*GPUJobQueueItem, error) {
+	var item GPUJobQueueItem
+	var startedAt, finishedAt sql.NullTime
+	err := db.QueryRow(`
+		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		FROM gpu_job_queue WHERE status = 'queued'
+		ORDER BY created_at, id LIMIT 1
+	`).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt)
+	if err != nil {
+		return nil, err
+	}
+	item.StartedAt = nullTimePtr(startedAt)
+	item.FinishedAt = nullTimePtr(finishedAt)
+	return &item, nil
+}
+
+func (db *DB) ListOpenGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.Query(`
+		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		FROM gpu_job_queue
+		WHERE status IN ('queued', 'running')
+		ORDER BY created_at, id LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GPUJobQueueItem
+	for rows.Next() {
+		var item GPUJobQueueItem
+		var startedAt, finishedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
+			return nil, err
+		}
+		item.StartedAt = nullTimePtr(startedAt)
+		item.FinishedAt = nullTimePtr(finishedAt)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) MarkGPUQueueRunning(id int64, unitName string) error {
+	_, err := db.Exec(`
+		UPDATE gpu_job_queue
+		SET status = 'running', unit_name = ?, started_at = CURRENT_TIMESTAMP, finished_at = NULL
+		WHERE id = ?
+	`, unitName, id)
+	return err
+}
+
+func (db *DB) MarkGPUQueueFinished(rawPath, status string) error {
+	if status == "" {
+		status = "finished"
+	}
+	_, err := db.Exec(`
+		UPDATE gpu_job_queue
+		SET status = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE raw_path = ? AND status IN ('queued', 'running')
+	`, status, rawPath)
+	return err
+}
+
+func nullTimePtr(t sql.NullTime) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
 }
 
 // ---------- Nostr queries ----------

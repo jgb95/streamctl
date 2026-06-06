@@ -96,6 +96,36 @@
               description = "Optional DigitalOcean API token file. Enables creating/destroying GPU worker Droplets from the web UI.";
             };
 
+            runpodTokenFile = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Optional RunPod API token file. Enables creating/destroying GPU worker pods from the web UI.";
+            };
+
+            runpodPodName = lib.mkOption {
+              type = lib.types.str;
+              default = "streamctl-gpu-worker";
+              description = "Name for the managed RunPod worker pod.";
+            };
+
+            runpodGPUType = lib.mkOption {
+              type = lib.types.str;
+              default = "NVIDIA L40S";
+              description = "RunPod GPU type ID for managed workers.";
+            };
+
+            runpodImage = lib.mkOption {
+              type = lib.types.str;
+              default = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04";
+              description = "RunPod container image for managed workers.";
+            };
+
+            runpodCloudType = lib.mkOption {
+              type = lib.types.str;
+              default = "SECURE";
+              description = "RunPod cloud type for managed workers.";
+            };
+
             gpuDropletName = lib.mkOption {
               type = lib.types.str;
               default = "streamctl-gpu-worker";
@@ -104,7 +134,7 @@
 
             gpuDropletRegion = lib.mkOption {
               type = lib.types.str;
-              default = "nyc3";
+              default = "nyc2";
               description = "DigitalOcean region for the managed GPU worker.";
             };
 
@@ -116,7 +146,7 @@
 
             gpuDropletImage = lib.mkOption {
               type = lib.types.str;
-              default = "ubuntu-24-04-x64";
+              default = "gpu-h100x1-base";
               description = "DigitalOcean image slug for the managed GPU worker.";
             };
 
@@ -256,6 +286,11 @@
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
                     -gpu-worker-command=${cfg.gpuWorkerCommand} \
                     -do-token-file=${cfg.digitalOceanTokenFile} \
+                    -runpod-token-file=${cfg.runpodTokenFile} \
+                    -runpod-pod-name=${lib.escapeShellArg cfg.runpodPodName} \
+                    -runpod-gpu-type=${lib.escapeShellArg cfg.runpodGPUType} \
+                    -runpod-image=${lib.escapeShellArg cfg.runpodImage} \
+                    -runpod-cloud-type=${lib.escapeShellArg cfg.runpodCloudType} \
                     -gpu-droplet-name=${cfg.gpuDropletName} \
                     -gpu-droplet-region=${cfg.gpuDropletRegion} \
                     -gpu-droplet-size=${cfg.gpuDropletSize} \

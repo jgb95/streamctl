@@ -19,6 +19,7 @@ IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
         ssh logs timers destroy check-token check-gpu-token check-ip stream-logs upload \
         install-rclone-config maybe-install-rclone-config \
         install-digitalocean-gpu-token maybe-install-digitalocean-gpu-token verify-digitalocean-gpu-token backup-db \
+        install-runpod-token maybe-install-runpod-token verify-runpod-token \
         gpu-upload gpu-transcode
 
 # ---------- help ----------
@@ -124,6 +125,7 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
           --no-reexec
 	@$(MAKE) maybe-install-rclone-config
 	@$(MAKE) maybe-install-digitalocean-gpu-token
+	@$(MAKE) maybe-install-runpod-token
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
 	nixos-rebuild switch \
@@ -131,6 +133,7 @@ deploy-local-build: check-ip ## Deploy but build locally, then copy result to dr
 	  --target-host root@$(IP)
 	@$(MAKE) maybe-install-rclone-config
 	@$(MAKE) maybe-install-digitalocean-gpu-token
+	@$(MAKE) maybe-install-runpod-token
 
 deploy-dry: check-ip ## Test the config without switching (validation only).
 	nixos-rebuild dry-activate \
@@ -233,6 +236,29 @@ verify-digitalocean-gpu-token: check-ip ## Verify the installed GPU token can li
 	  curl -sS -w "\nHTTP %{http_code}\n" \
 	    -H "Authorization: Bearer $$token" \
 	    "https://api.digitalocean.com/v2/droplets?tag_name=streamctl-gpu-worker"'
+
+install-runpod-token: check-ip ## Install RUNPOD_API_KEY on the droplet for managed RunPod GPU workers.
+	@if [ -z "$${RUNPOD_API_KEY:-}" ]; then \
+	  echo "ERROR: RUNPOD_API_KEY is not set." >&2; \
+	  exit 1; \
+	fi
+	@printf '%s\n' "$${RUNPOD_API_KEY}" | ssh root@$(IP) \
+	  'install -d -m 0750 /var/lib/streamctl && \
+	   install -m 0400 -o root -g root /dev/stdin /var/lib/streamctl/runpod-token'
+	@echo "Installed RunPod token at /var/lib/streamctl/runpod-token."
+
+maybe-install-runpod-token: check-ip ## Install RUNPOD_API_KEY when present; skip otherwise.
+	@if [ -n "$${RUNPOD_API_KEY:-}" ]; then \
+	  $(MAKE) install-runpod-token; \
+	else \
+	  echo "No RUNPOD_API_KEY found; skipping RunPod token install."; \
+	fi
+
+verify-runpod-token: check-ip ## Verify the installed RunPod token can list pods.
+	@ssh root@$(IP) 'token=$$(tr -d "\r\n" </var/lib/streamctl/runpod-token); \
+	  curl -sS -w "\nHTTP %{http_code}\n" \
+	    -H "Authorization: Bearer $$token" \
+	    "https://rest.runpod.io/v1/pods"'
 
 # Usage: make gpu-upload GPU_HOST=ubuntu@1.2.3.4
 gpu-upload: ## Upload the NVENC transcode worker script and rclone config to a GPU VM.

@@ -42,10 +42,15 @@ func main() {
 		gpuWorkerHost      = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerCommand   = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		doTokenFile        = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
+		runpodTokenFile    = flag.String("runpod-token-file", "", "RunPod API token file for managed GPU workers")
+		runpodPodName      = flag.String("runpod-pod-name", "streamctl-gpu-worker", "managed RunPod pod name")
+		runpodGPUType      = flag.String("runpod-gpu-type", "NVIDIA L40S", "managed RunPod GPU type ID")
+		runpodImage        = flag.String("runpod-image", "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04", "managed RunPod container image")
+		runpodCloudType    = flag.String("runpod-cloud-type", "SECURE", "managed RunPod cloud type")
 		gpuDropletName     = flag.String("gpu-droplet-name", "streamctl-gpu-worker", "managed GPU Droplet name")
-		gpuDropletRegion   = flag.String("gpu-droplet-region", "nyc3", "managed GPU Droplet region")
+		gpuDropletRegion   = flag.String("gpu-droplet-region", "nyc2", "managed GPU Droplet region")
 		gpuDropletSize     = flag.String("gpu-droplet-size", "gpu-h100x1-80gb", "managed GPU Droplet size slug")
-		gpuDropletImage    = flag.String("gpu-droplet-image", "ubuntu-24-04-x64", "managed GPU Droplet image slug")
+		gpuDropletImage    = flag.String("gpu-droplet-image", "gpu-h100x1-base", "managed GPU Droplet image slug")
 		gpuSSHKeyName      = flag.String("gpu-ssh-key-name", "streamctl-deploy", "DigitalOcean SSH key name to install on managed GPU Droplets")
 		gpuWorkerUser      = flag.String("gpu-worker-user", "root", "SSH user for managed GPU Droplets")
 		gpuDestroyAfterJob = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful transcode job")
@@ -114,6 +119,11 @@ func main() {
 		GPUWorkerHost:      strings.TrimSpace(*gpuWorkerHost),
 		GPUWorkerCommand:   strings.TrimSpace(*gpuWorkerCommand),
 		DOTokenFile:        strings.TrimSpace(*doTokenFile),
+		RunPodTokenFile:    strings.TrimSpace(*runpodTokenFile),
+		RunPodPodName:      strings.TrimSpace(*runpodPodName),
+		RunPodGPUType:      strings.TrimSpace(*runpodGPUType),
+		RunPodImage:        strings.TrimSpace(*runpodImage),
+		RunPodCloudType:    strings.TrimSpace(*runpodCloudType),
 		GPUDropletName:     strings.TrimSpace(*gpuDropletName),
 		GPUDropletRegion:   strings.TrimSpace(*gpuDropletRegion),
 		GPUDropletSize:     strings.TrimSpace(*gpuDropletSize),

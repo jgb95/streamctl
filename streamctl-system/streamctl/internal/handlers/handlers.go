@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -23,17 +24,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"streamctl/internal/db"
 	"streamctl/internal/doclient"
 	"streamctl/internal/nostrpub"
 	"streamctl/internal/probe"
+	"streamctl/internal/runpodclient"
 	"streamctl/internal/systemd"
 )
 
 //go:embed templates/*.html
 var templateFS embed.FS
+
+const gpuWorkerSSHKeyPath = "/var/lib/streamctl/gpu-worker-ssh-key"
 
 type Handler struct {
 	DB                 *db.DB
@@ -48,6 +53,11 @@ type Handler struct {
 	GPUWorkerHost      string
 	GPUWorkerCommand   string
 	DOTokenFile        string
+	RunPodTokenFile    string
+	RunPodPodName      string
+	RunPodGPUType      string
+	RunPodImage        string
+	RunPodCloudType    string
 	GPUDropletName     string
 	GPUDropletRegion   string
 	GPUDropletSize     string
@@ -57,7 +67,8 @@ type Handler struct {
 	GPUDestroyAfterJob bool
 	Systemd            *systemd.Manager
 
-	funcs template.FuncMap
+	funcs      template.FuncMap
+	gpuQueueMu sync.Mutex
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -106,6 +117,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/nostr/relays/create", h.auth(http.HandlerFunc(h.nostrRelayCreate)))
 	mux.Handle("/nostr/relays/update/", h.auth(http.HandlerFunc(h.nostrRelayUpdate)))
 	mux.Handle("/nostr/relays/delete/", h.auth(http.HandlerFunc(h.nostrRelayDelete)))
+	go h.gpuQueueDispatcher()
 }
 
 // ---------- auth ----------
@@ -805,11 +817,13 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 // ---------- Livestream files ----------
 
 type livestreamFileView struct {
-	Conference     string
-	Name           string
-	RawPath        string
-	NormalizedPath string
-	Processed      bool
+	Conference      string
+	Name            string
+	RawPath         string
+	NormalizedPath  string
+	Processed       bool
+	ProcessingUnit  string
+	ProcessingState string
 }
 
 type gpuWorkerView struct {
@@ -875,6 +889,11 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	worker := h.gpuWorkerView(r.Context())
 	gpuStatus := h.gpuStatus(r.Context(), worker)
+	openQueue, err := h.DB.ListOpenGPUQueueItems(100)
+	if err != nil {
+		log.Printf("listing GPU queue failed: %v", err)
+	}
+	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue)
 	gpuAvailability := h.gpuAvailability(r.Context())
 	h.render(w, "livestream_files.html", map[string]any{
 		"Files":           files,
@@ -903,34 +922,26 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	host, err := h.gpuWorkerSSHHost(r.Context())
+	item, err := h.DB.EnqueueGPUJob(rawPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("queueing GPU job failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-	command := strings.TrimSpace(h.GPUWorkerCommand)
-	unitName, out, err := startRemoteGPUTranscode(r.Context(), host, command, rawPath)
-	if err != nil {
-		log.Printf("GPU transcode submit %s failed: %v: %s", rawPath, err, strings.TrimSpace(out))
-		http.Error(w, fmt.Sprintf("starting GPU job failed: %v\n%s", err, strings.TrimSpace(out)), http.StatusBadGateway)
-		return
-	}
-	log.Printf("GPU transcode %s submitted as %s: %s", rawPath, unitName, strings.TrimSpace(out))
 	if err := h.saveGPUJobLog(gpuJobView{
-		UnitName:    unitName,
+		UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(rawPath)),
 		RawPath:     rawPath,
-		Host:        host,
 		Description: "streamctl GPU transcode " + rawPath,
 		ActiveState: "queued",
 	}); err != nil {
-		log.Printf("saving GPU job %s failed: %v", unitName, err)
+		log.Printf("saving queued GPU job %s failed: %v", rawPath, err)
 	}
-	go h.monitorGPUJob(unitName, rawPath, host)
+	go h.dispatchGPUQueueOnce(context.Background())
 
 	q := url.Values{}
 	q.Set("started", rawPath)
-	q.Set("job", unitName)
+	if item.UnitName != "" {
+		q.Set("job", item.UnitName)
+	}
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
 }
 
@@ -968,7 +979,7 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 
 func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string) (string, string, error) {
 	unitName := gpuTranscodeUnitName(rawPath)
-	remote := strings.Join([]string{
+	systemdRun := strings.Join([]string{
 		"systemd-run",
 		"--unit=" + shellQuote(unitName),
 		"--description=" + shellQuote("streamctl GPU transcode "+rawPath),
@@ -980,7 +991,26 @@ func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string)
 		shellQuote(command),
 		shellQuote(rawPath),
 	}, " ")
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", host, remote)
+	remote := strings.Join([]string{
+		"unit=" + shellQuote(unitName),
+		"raw=" + shellQuote(rawPath),
+		"cmd=" + shellQuote(command),
+		"desc=" + shellQuote("streamctl GPU transcode "+rawPath),
+		"if command -v systemd-run >/dev/null 2>&1 && systemctl show-environment >/dev/null 2>&1; then exec " + systemdRun + "; fi",
+		"jobdir=/root/streamctl-gpu-jobs/$unit",
+		"mkdir -p \"$jobdir\"",
+		"printf '%s\\n' \"$desc\" > \"$jobdir/description\"",
+		"printf '%s\\n' \"$raw\" > \"$jobdir/raw_path\"",
+		"date -Is > \"$jobdir/since\"",
+		"printf 'running\\n' > \"$jobdir/active\"",
+		"printf 'running\\n' > \"$jobdir/sub\"",
+		": > \"$jobdir/result\"",
+		": > \"$jobdir/journal\"",
+		"nohup env RCLONE_CONFIG=/root/rclone.conf STREAMCTL_JOBDIR=\"$jobdir\" bash -c 'set +e; \"$1\" \"$2\" >> \"$STREAMCTL_JOBDIR/journal\" 2>&1; rc=$?; if [ \"$rc\" -eq 0 ]; then printf \"inactive\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"exited\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"success\\n\" > \"$STREAMCTL_JOBDIR/result\"; else printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"exit-code\\n\" > \"$STREAMCTL_JOBDIR/result\"; fi; exit \"$rc\"' streamctl-gpu-job \"$cmd\" \"$raw\" >/dev/null 2>&1 & printf '%s\\n' \"$!\" > \"$jobdir/pid\"",
+		"printf '%s\\n' \"$unit\"",
+	}, "; ")
+	args := sshArgs(host, remote)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	out, err := cmd.CombinedOutput()
 	return unitName, string(out), err
 }
@@ -1012,7 +1042,12 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 		status.Error = fmt.Sprintf("GPU jobs unavailable: %v: %s", err, strings.TrimSpace(unitsOut))
 		return h.appendCachedGPUJobs(status)
 	}
-	for _, unit := range parseGPUUnitList(unitsOut) {
+	units := parseGPUUnitList(unitsOut)
+	fileUnitsOut, fileUnitsErr := remoteSSH(ctx, host, "if [ -d /root/streamctl-gpu-jobs ]; then for d in /root/streamctl-gpu-jobs/streamctl-gpu-*; do [ -d \"$d\" ] && basename \"$d\"; done; fi")
+	if fileUnitsErr == nil {
+		units = append(units, parseGPUFileJobList(fileUnitsOut)...)
+	}
+	for _, unit := range dedupeGPUUnits(units) {
 		job := h.gpuJob(ctx, host, unit, false)
 		status.Jobs = append(status.Jobs, job)
 		if isTerminalGPUJob(job) {
@@ -1020,7 +1055,11 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 			if err := h.saveGPUJobLog(full); err != nil {
 				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
 			}
+			if full.RawPath != "" {
+				h.markGPUQueueTerminal(full.RawPath, full)
+			}
 			h.destroyManagedGPUAfterTerminalJob(ctx, full)
+			go h.dispatchGPUQueueOnce(context.Background())
 		}
 		if len(status.Jobs) >= 10 {
 			break
@@ -1058,6 +1097,10 @@ func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal 
 	job := gpuJobView{UnitName: unit, Host: host}
 	show, err := remoteSSH(ctx, host, "systemctl show "+shellQuote(unit)+" --property=Description --property=LoadedState --property=ActiveState --property=SubState --property=Result --property=ActiveEnterTimestamp")
 	if err != nil {
+		fileJob := h.gpuFileJob(ctx, host, unit, includeJournal)
+		if fileJob.LoadedState != "" || fileJob.ActiveState != "" || fileJob.Journal != "" {
+			return fileJob
+		}
 		job.Error = appendGPUError(job.Error, fmt.Errorf("systemctl show: %w: %s", err, strings.TrimSpace(show)))
 	} else {
 		populateGPUJobState(&job, show)
@@ -1067,6 +1110,50 @@ func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal 
 		job.Journal = strings.TrimSpace(journal)
 		if err != nil {
 			job.Error = appendGPUError(job.Error, fmt.Errorf("journalctl: %w: %s", err, strings.TrimSpace(journal)))
+		}
+	}
+	return job
+}
+
+func (h *Handler) gpuFileJob(ctx context.Context, host, unit string, includeJournal bool) gpuJobView {
+	job := gpuJobView{UnitName: unit, Host: host, LoadedState: "loaded"}
+	jobdir := "/root/streamctl-gpu-jobs/" + unit
+	metaCmd := strings.Join([]string{
+		"jobdir=" + shellQuote(jobdir),
+		"[ -d \"$jobdir\" ] || exit 1",
+		"for f in description raw_path active sub result since; do printf '%s=' \"$f\"; tr '\\n' ' ' < \"$jobdir/$f\" 2>/dev/null || true; printf '\\n'; done",
+	}, "; ")
+	meta, err := remoteSSH(ctx, host, metaCmd)
+	if err != nil {
+		job.Error = appendGPUError(job.Error, fmt.Errorf("remote job metadata: %w: %s", err, strings.TrimSpace(meta)))
+		return job
+	}
+	for _, line := range strings.Split(meta, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch key {
+		case "description":
+			job.Description = value
+		case "raw_path":
+			job.RawPath = value
+		case "active":
+			job.ActiveState = value
+		case "sub":
+			job.SubState = value
+		case "result":
+			job.Result = value
+		case "since":
+			job.Since = value
+		}
+	}
+	if includeJournal {
+		journal, err := remoteSSH(ctx, host, "cat "+shellQuote(jobdir+"/journal")+" 2>/dev/null || true")
+		job.Journal = strings.TrimSpace(journal)
+		if err != nil {
+			job.Error = appendGPUError(job.Error, fmt.Errorf("remote job log: %w: %s", err, strings.TrimSpace(journal)))
 		}
 	}
 	return job
@@ -1096,7 +1183,9 @@ func (h *Handler) monitorGPUJob(unitName, rawPath, host string) {
 			if err := h.saveGPUJobLog(full); err != nil {
 				log.Printf("saving GPU job %s journal failed: %v", unitName, err)
 			}
+			h.markGPUQueueTerminal(rawPath, full)
 			h.destroyManagedGPUAfterTerminalJob(ctx, full)
+			go h.dispatchGPUQueueOnce(context.Background())
 			return
 		}
 	}
@@ -1138,13 +1227,142 @@ func isTerminalGPUJob(job gpuJobView) bool {
 	return job.ActiveState == "inactive" || job.ActiveState == "failed"
 }
 
+func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem) {
+	activeByRawPath := map[string]gpuJobView{}
+	for _, job := range jobs {
+		if strings.TrimSpace(job.RawPath) == "" || isTerminalGPUJob(job) {
+			continue
+		}
+		activeByRawPath[job.RawPath] = job
+	}
+	queuedByRawPath := map[string]db.GPUJobQueueItem{}
+	for _, item := range queue {
+		if strings.TrimSpace(item.RawPath) == "" {
+			continue
+		}
+		queuedByRawPath[item.RawPath] = item
+	}
+	for i := range files {
+		if job, ok := activeByRawPath[files[i].RawPath]; ok {
+			files[i].ProcessingUnit = job.UnitName
+			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
+			continue
+		}
+		if item, ok := queuedByRawPath[files[i].RawPath]; ok {
+			files[i].ProcessingUnit = firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath))
+			files[i].ProcessingState = item.Status
+		}
+	}
+}
+
+func (h *Handler) gpuQueueDispatcher() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		h.dispatchGPUQueueOnce(context.Background())
+		<-ticker.C
+	}
+}
+
+func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
+	h.gpuQueueMu.Lock()
+	defer h.gpuQueueMu.Unlock()
+	if !h.gpuWorkerConfigured() {
+		return
+	}
+	worker := h.gpuWorkerView(ctx)
+	if worker.Managed && worker.Status != "active" {
+		return
+	}
+	host := strings.TrimSpace(h.GPUWorkerHost)
+	if host == "" {
+		host = worker.SSHHost
+	}
+	if host == "" {
+		return
+	}
+	status := h.gpuStatus(ctx, worker)
+	for _, job := range status.Jobs {
+		if !isTerminalGPUJob(job) {
+			return
+		}
+	}
+	item, err := h.DB.NextQueuedGPUJob()
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("loading next queued GPU job failed: %v", err)
+		}
+		return
+	}
+	if out, err := waitForRemoteSSH(ctx, host, 2*time.Minute); err != nil {
+		log.Printf("GPU worker SSH readiness failed for queued %s: %v: %s", item.RawPath, err, strings.TrimSpace(out))
+		return
+	}
+	command := strings.TrimSpace(h.GPUWorkerCommand)
+	unitName, out, err := startRemoteGPUTranscode(ctx, host, command, item.RawPath)
+	if err != nil {
+		log.Printf("GPU transcode submit queued %s failed: %v: %s", item.RawPath, err, strings.TrimSpace(out))
+		if err := h.DB.MarkGPUQueueFinished(item.RawPath, "failed"); err != nil {
+			log.Printf("marking queued GPU job %s failed: %v", item.RawPath, err)
+		}
+		return
+	}
+	log.Printf("GPU transcode queued %s submitted as %s: %s", item.RawPath, unitName, strings.TrimSpace(out))
+	if err := h.DB.MarkGPUQueueRunning(item.ID, unitName); err != nil {
+		log.Printf("marking GPU queue item %d running failed: %v", item.ID, err)
+	}
+	if err := h.saveGPUJobLog(gpuJobView{
+		UnitName:    unitName,
+		RawPath:     item.RawPath,
+		Host:        host,
+		Description: "streamctl GPU transcode " + item.RawPath,
+		ActiveState: "running",
+		SubState:    "running",
+	}); err != nil {
+		log.Printf("saving GPU job %s failed: %v", unitName, err)
+	}
+	go h.monitorGPUJob(unitName, item.RawPath, host)
+}
+
+func (h *Handler) markGPUQueueTerminal(rawPath string, job gpuJobView) {
+	status := "finished"
+	if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
+		status = "failed"
+	}
+	if err := h.DB.MarkGPUQueueFinished(rawPath, status); err != nil {
+		log.Printf("marking GPU queue %s %s failed: %v", rawPath, status, err)
+	}
+}
+
 func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpuJobView) {
-	if strings.TrimSpace(h.DOTokenFile) == "" {
+	if strings.TrimSpace(h.DOTokenFile) == "" && !h.hasRunPodToken() {
 		return
 	}
 	failed := job.ActiveState == "failed" || (job.Result != "" && job.Result != "success")
 	shouldDestroy := failed || h.GPUDestroyAfterJob
 	if !shouldDestroy {
+		return
+	}
+	if h.hasRunPodToken() {
+		client, err := h.runpodClient()
+		if err != nil {
+			log.Printf("RunPod worker cleanup skipped for %s: %v", job.UnitName, err)
+			return
+		}
+		pods, err := client.ListPods(ctx)
+		if err != nil {
+			log.Printf("listing RunPod workers for cleanup failed: %v", err)
+			return
+		}
+		for _, pod := range pods {
+			if pod.Name != h.runpodPodName() {
+				continue
+			}
+			log.Printf("destroying RunPod worker %s after job %s active=%s result=%s", pod.ID, job.UnitName, job.ActiveState, job.Result)
+			if err := client.DeletePod(ctx, pod.ID); err != nil {
+				log.Printf("destroying RunPod worker %s failed: %v", pod.ID, err)
+			}
+		}
 		return
 	}
 	client, err := h.doClient()
@@ -1166,9 +1384,59 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 }
 
 func remoteSSH(ctx context.Context, host, remoteCommand string) (string, error) {
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", host, remoteCommand)
+	args := sshArgsWithOptions(host, remoteCommand, "-o", "ConnectTimeout=5")
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func waitForRemoteSSH(ctx context.Context, host string, timeout time.Duration) (string, error) {
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastOut string
+	var lastErr error
+	for {
+		probeCtx, probeCancel := context.WithTimeout(deadline, 8*time.Second)
+		out, err := remoteSSH(probeCtx, host, "true")
+		probeCancel()
+		if err == nil {
+			return out, nil
+		}
+		lastOut = out
+		lastErr = err
+		select {
+		case <-deadline.Done():
+			if lastErr == nil {
+				lastErr = deadline.Err()
+			}
+			return lastOut, lastErr
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+func sshArgs(target, remoteCommand string) []string {
+	return sshArgsWithOptions(target, remoteCommand)
+}
+
+func sshArgsWithOptions(target, remoteCommand string, extraOptions ...string) []string {
+	args := []string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"}
+	args = append(args, extraOptions...)
+	if u, err := url.Parse(target); err == nil && u.Scheme == "ssh" && u.Hostname() != "" {
+		if identity := strings.TrimSpace(u.Query().Get("identity")); identity != "" {
+			args = append(args, "-i", identity)
+		}
+		if port := u.Port(); port != "" {
+			args = append(args, "-p", port)
+		}
+		userHost := u.Hostname()
+		if u.User != nil && u.User.Username() != "" {
+			userHost = u.User.Username() + "@" + userHost
+		}
+		args = append(args, userHost, remoteCommand)
+		return args
+	}
+	return append(args, target, remoteCommand)
 }
 
 func parseGPUUnitList(out string) []string {
@@ -1186,6 +1454,30 @@ func parseGPUUnitList(out string) []string {
 		}
 	}
 	return units
+}
+
+func parseGPUFileJobList(out string) []string {
+	var units []string
+	for _, line := range strings.Split(out, "\n") {
+		unit := strings.TrimSpace(line)
+		if validGPUUnitName(unit) {
+			units = append(units, unit)
+		}
+	}
+	return units
+}
+
+func dedupeGPUUnits(units []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, unit := range units {
+		if !validGPUUnitName(unit) || seen[unit] {
+			continue
+		}
+		seen[unit] = true
+		out = append(out, unit)
+	}
+	return out
 }
 
 func populateGPUJobState(job *gpuJobView, out string) {
@@ -1265,6 +1557,9 @@ func (h *Handler) gpuWorkerConfigured() bool {
 	if strings.TrimSpace(h.GPUWorkerHost) != "" && strings.TrimSpace(h.GPUWorkerCommand) != "" {
 		return true
 	}
+	if h.hasRunPodToken() && strings.TrimSpace(h.GPUWorkerCommand) != "" {
+		return true
+	}
 	return strings.TrimSpace(h.DOTokenFile) != "" && strings.TrimSpace(h.GPUWorkerCommand) != ""
 }
 
@@ -1284,12 +1579,15 @@ func (h *Handler) gpuWorkerSSHHost(ctx context.Context) (string, error) {
 
 func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
 	view := gpuWorkerView{
-		Managed:    strings.TrimSpace(h.DOTokenFile) != "",
+		Managed:    strings.TrimSpace(h.DOTokenFile) != "" || h.hasRunPodToken(),
 		Configured: h.gpuWorkerConfigured(),
 		SSHHost:    strings.TrimSpace(h.GPUWorkerHost),
 	}
 	if !view.Managed {
 		return view
+	}
+	if h.hasRunPodToken() {
+		return h.runpodWorkerView(ctx, view)
 	}
 	client, err := h.doClient()
 	if err != nil {
@@ -1316,6 +1614,10 @@ func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
 }
 
 func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
+	if h.hasRunPodToken() {
+		h.runpodWorkerCreate(w, r)
+		return
+	}
 	client, err := h.doClient()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1354,7 +1656,7 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		Name:       h.gpuDropletName(),
 		Region:     region,
 		Size:       size,
-		Image:      firstNonEmptyString(h.GPUDropletImage, "ubuntu-24-04-x64"),
+		Image:      firstNonEmptyString(h.GPUDropletImage, "gpu-h100x1-base"),
 		SSHKeys:    []string{key.Fingerprint},
 		Monitoring: true,
 		Tags:       []string{h.gpuWorkerTag(), "streamctl"},
@@ -1369,7 +1671,10 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
 	view := gpuAvailabilityView{
 		DefaultSize:   firstNonEmptyString(h.GPUDropletSize, "gpu-h100x1-80gb"),
-		DefaultRegion: firstNonEmptyString(h.GPUDropletRegion, "nyc3"),
+		DefaultRegion: firstNonEmptyString(h.GPUDropletRegion, "nyc2"),
+	}
+	if h.hasRunPodToken() {
+		return h.runpodAvailability(view)
 	}
 	if strings.TrimSpace(h.DOTokenFile) == "" {
 		return view
@@ -1384,11 +1689,16 @@ func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
 		view.Error = err.Error()
 		return view
 	}
+	gpuSizeCount := 0
 	for _, size := range sizes {
-		if !isGPUSize(size) || !containsString(size.Regions, view.DefaultRegion) {
+		if !isGPUSize(size) {
 			continue
 		}
+		gpuSizeCount++
 		regions := append([]string(nil), size.Regions...)
+		if len(regions) == 0 {
+			continue
+		}
 		sort.Strings(regions)
 		view.Sizes = append(view.Sizes, gpuSizeView{
 			Slug:          size.Slug,
@@ -1406,13 +1716,37 @@ func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
 		if size.Slug == view.DefaultSize {
 			view.SelectedSize = size.Slug
 			view.SelectedRegions = size.Regions
+			if !containsString(size.Regions, view.DefaultRegion) && len(size.Regions) > 0 {
+				view.DefaultRegion = size.Regions[0]
+			}
 			return view
 		}
 	}
 	if len(view.Sizes) > 0 {
 		view.SelectedSize = view.Sizes[0].Slug
 		view.SelectedRegions = view.Sizes[0].Regions
+		if !containsString(view.SelectedRegions, view.DefaultRegion) && len(view.SelectedRegions) > 0 {
+			view.DefaultRegion = view.SelectedRegions[0]
+		}
+	} else if gpuSizeCount > 0 {
+		view.Error = "DigitalOcean reports GPU sizes for this account, but no GPU regions are currently createable via the Droplet API. This usually means GPU Droplet access/capacity is not enabled for the account or team."
 	}
+	return view
+}
+
+func (h *Handler) runpodAvailability(view gpuAvailabilityView) gpuAvailabilityView {
+	view.DefaultSize = firstNonEmptyString(h.RunPodGPUType, "NVIDIA L40S")
+	for _, size := range []gpuSizeView{
+		{Slug: "NVIDIA L40S", Description: "NVIDIA L40S", PriceHourly: 0},
+		{Slug: "NVIDIA RTX 4090", Description: "NVIDIA RTX 4090", PriceHourly: 0},
+		{Slug: "NVIDIA RTX A6000", Description: "NVIDIA RTX A6000", PriceHourly: 0},
+		{Slug: "NVIDIA A40", Description: "NVIDIA A40", PriceHourly: 0},
+		{Slug: "NVIDIA H100 PCIe", Description: "NVIDIA H100 PCIe", PriceHourly: 0},
+	} {
+		size.DefaultSize = size.Slug == view.DefaultSize
+		view.Sizes = append(view.Sizes, size)
+	}
+	view.SelectedSize = view.DefaultSize
 	return view
 }
 
@@ -1428,12 +1762,161 @@ func (h *Handler) validateGPUSizeRegion(ctx context.Context, client *doclient.Cl
 		if !isGPUSize(candidate) {
 			return fmt.Errorf("size %s is not a GPU size", size)
 		}
+		if len(candidate.Regions) == 0 {
+			return fmt.Errorf("DigitalOcean reports GPU size %s, but no createable regions for it on this account", size)
+		}
 		if !containsString(candidate.Regions, region) {
 			return fmt.Errorf("size %s is not available in region %s; available regions: %s", size, region, strings.Join(candidate.Regions, ", "))
 		}
 		return nil
 	}
 	return fmt.Errorf("GPU size %s not found", size)
+}
+
+func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuWorkerView {
+	client, err := h.runpodClient()
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	pods, err := client.ListPods(ctx)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	for _, pod := range pods {
+		if pod.Name != h.runpodPodName() {
+			continue
+		}
+		view.ID = 1
+		view.Name = pod.Name
+		view.Status = pod.Status()
+		view.SSHHost = pod.SSHHost(firstNonEmptyString(h.GPUWorkerUser, "root"))
+		if view.SSHHost != "" {
+			view.SSHHost = appendSSHIdentity(view.SSHHost, gpuWorkerSSHKeyPath)
+		}
+		ip, _ := pod.SSHAddress()
+		view.IP = ip
+		return view
+	}
+	return view
+}
+
+func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
+	client, err := h.runpodClient()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	pods, err := client.ListPods(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	for _, pod := range pods {
+		if pod.Name == h.runpodPodName() {
+			http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+			return
+		}
+	}
+	sshPublicKey, err := ensureGPUWorkerSSHPublicKey(gpuWorkerSSHKeyPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("reading SSH public key for RunPod: %v", err), http.StatusInternalServerError)
+		return
+	}
+	env, err := h.runpodWorkerEnv(sshPublicKey)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	gpuType := firstNonEmptyString(r.FormValue("size"), h.RunPodGPUType, "NVIDIA L40S")
+	if _, err := client.CreatePod(r.Context(), runpodclient.CreatePodRequest{
+		Name:              h.runpodPodName(),
+		ImageName:         firstNonEmptyString(h.RunPodImage, "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"),
+		GPUTypeIDs:        []string{gpuType},
+		GPUCount:          1,
+		CloudType:         firstNonEmptyString(h.RunPodCloudType, "SECURE"),
+		ContainerDiskInGB: 80,
+		VolumeInGB:        80,
+		Ports:             []string{"22/tcp"},
+		Env:               env,
+		DockerStartCmd: []string{"bash", "-lc", strings.Join([]string{
+			"set -euo pipefail",
+			"apt-get update",
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates",
+			"mkdir -p /run/sshd /root/.ssh",
+			"printf '%s\n' \"$SSH_PUBLIC_KEY\" > /root/.ssh/authorized_keys",
+			"chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys",
+			"printf '%s' \"$RCLONE_CONFIG_B64\" | base64 -d > /root/rclone.conf",
+			"printf '%s' \"$TRANSCODE_SCRIPT_B64\" | base64 -d > /root/transcode-nvenc.sh",
+			"chmod 400 /root/rclone.conf && chmod 755 /root/transcode-nvenc.sh",
+			"exec /usr/sbin/sshd -D -e",
+		}, " && ")},
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+}
+
+func (h *Handler) runpodWorkerDestroy(w http.ResponseWriter, r *http.Request) {
+	client, err := h.runpodClient()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pods, err := client.ListPods(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	for _, pod := range pods {
+		if pod.Name != h.runpodPodName() {
+			continue
+		}
+		if err := client.DeletePod(r.Context(), pod.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+}
+
+func (h *Handler) runpodWorkerEnv(sshPublicKey string) (map[string]string, error) {
+	rcloneConfig, err := os.ReadFile(h.RcloneConfig)
+	if err != nil {
+		return nil, fmt.Errorf("reading rclone config: %w", err)
+	}
+	return map[string]string{
+		"SSH_PUBLIC_KEY":       strings.TrimSpace(sshPublicKey),
+		"RCLONE_CONFIG_B64":    base64.StdEncoding.EncodeToString(rcloneConfig),
+		"TRANSCODE_SCRIPT_B64": base64.StdEncoding.EncodeToString([]byte(gpuTranscodeScript())),
+	}, nil
+}
+
+func (h *Handler) runpodClient() (*runpodclient.Client, error) {
+	token, err := readTokenFile(h.RunPodTokenFile, "RunPod")
+	if err != nil {
+		return nil, err
+	}
+	return runpodclient.New(token), nil
+}
+
+func (h *Handler) runpodPodName() string {
+	return firstNonEmptyString(h.RunPodPodName, h.gpuDropletName(), "streamctl-gpu-worker")
+}
+
+func (h *Handler) hasRunPodToken() bool {
+	tokenFile := strings.TrimSpace(h.RunPodTokenFile)
+	if tokenFile == "" {
+		return false
+	}
+	data, err := os.ReadFile(tokenFile)
+	return err == nil && strings.TrimSpace(string(data)) != ""
 }
 
 func isGPUSize(size doclient.Size) bool {
@@ -1452,6 +1935,10 @@ func containsString(values []string, want string) bool {
 }
 
 func (h *Handler) gpuWorkerDestroy(w http.ResponseWriter, r *http.Request) {
+	if h.hasRunPodToken() {
+		h.runpodWorkerDestroy(w, r)
+		return
+	}
 	client, err := h.doClient()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1480,18 +1967,80 @@ func (h *Handler) doClient() (*doclient.Client, error) {
 }
 
 func (h *Handler) doToken() (string, error) {
-	if strings.TrimSpace(h.DOTokenFile) == "" {
-		return "", fmt.Errorf("DigitalOcean token file is not configured")
+	return readTokenFile(h.DOTokenFile, "DigitalOcean")
+}
+
+func readTokenFile(file, label string) (string, error) {
+	if strings.TrimSpace(file) == "" {
+		return "", fmt.Errorf("%s token file is not configured", label)
 	}
-	data, err := os.ReadFile(h.DOTokenFile)
+	data, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("reading DigitalOcean token file: %w", err)
+		return "", fmt.Errorf("reading %s token file: %w", label, err)
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "", fmt.Errorf("DigitalOcean token file is empty")
+		return "", fmt.Errorf("%s token file is empty", label)
 	}
 	return token, nil
+}
+
+func readFirstExistingFile(files ...string) (string, error) {
+	var errs []string
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err == nil && strings.TrimSpace(string(data)) != "" {
+			return strings.TrimSpace(string(data)), nil
+		}
+		if err != nil {
+			errs = append(errs, file+": "+err.Error())
+		}
+	}
+	return "", errors.New(strings.Join(errs, "; "))
+}
+
+func ensureGPUWorkerSSHPublicKey(privateKey string) (string, error) {
+	publicKey := privateKey + ".pub"
+	data, err := os.ReadFile(publicKey)
+	if err == nil && strings.TrimSpace(string(data)) != "" {
+		return strings.TrimSpace(string(data)), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(privateKey), 0700); err != nil {
+		return "", err
+	}
+	out, err := exec.Command(
+		"ssh-keygen",
+		"-t", "ed25519",
+		"-N", "",
+		"-C", "streamctl-gpu-worker",
+		"-f", privateKey,
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("generating GPU worker SSH key: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	_ = os.Chmod(privateKey, 0600)
+	_ = os.Chmod(publicKey, 0644)
+	data, err = os.ReadFile(publicKey)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func appendSSHIdentity(target, identity string) string {
+	if strings.TrimSpace(identity) == "" {
+		return target
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "ssh" {
+		return target
+	}
+	q := u.Query()
+	if q.Get("identity") == "" {
+		q.Set("identity", identity)
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
 }
 
 func (h *Handler) gpuSSHKey(ctx context.Context, client *doclient.Client) (*doclient.SSHKey, error) {
@@ -1565,6 +2114,11 @@ remote="${SPACES_REMOTE:-spaces:btcpp}"
 workdir="${WORKDIR:-/tmp/streamctl-transcode}"
 video_bitrate="${VIDEO_BITRATE:-6800k}"
 audio_bitrate="${AUDIO_BITRATE:-160k}"
+rclone_stats="${RCLONE_STATS:-30s}"
+rclone_multithread_streams="${RCLONE_MULTI_THREAD_STREAMS:-16}"
+rclone_multithread_cutoff="${RCLONE_MULTI_THREAD_CUTOFF:-256M}"
+rclone_transfers="${RCLONE_TRANSFERS:-1}"
+rclone_checkers="${RCLONE_CHECKERS:-8}"
 
 case "$raw_path" in
   */recordings/edits/livestream/*) ;;
@@ -1585,6 +2139,26 @@ remote_path() {
   esac
 }
 
+rclone_copyto() {
+  rclone copyto \
+    --stats "$rclone_stats" \
+    --stats-one-line \
+    --transfers "$rclone_transfers" \
+    --checkers "$rclone_checkers" \
+    "$@"
+}
+
+rclone_download() {
+  rclone copyto \
+    --stats "$rclone_stats" \
+    --stats-one-line \
+    --transfers 1 \
+    --checkers "$rclone_checkers" \
+    --multi-thread-streams "$rclone_multithread_streams" \
+    --multi-thread-cutoff "$rclone_multithread_cutoff" \
+    "$@"
+}
+
 export RCLONE_CONFIG="${RCLONE_CONFIG:-/root/rclone.conf}"
 mkdir -p "$workdir"
 raw_file="${workdir}/${filename}"
@@ -1592,7 +2166,7 @@ out_file="${workdir}/${filename%.mp4}.normalized.mp4"
 ready_file="${workdir}/${filename}.ready.json"
 
 echo "transcode: downloading ${raw_path}"
-rclone copyto "$(remote_path "$raw_path")" "$raw_file"
+rclone_download "$(remote_path "$raw_path")" "$raw_file"
 
 echo "transcode: encoding ${raw_path} -> ${normalized_path}"
 rm -f -- "$out_file"
@@ -1621,8 +2195,8 @@ cat > "$ready_file" <<EOF
 EOF
 
 echo "transcode: uploading ${normalized_path}"
-rclone copyto "$out_file" "$(remote_path "$normalized_path")"
-rclone copyto "$ready_file" "$(remote_path "${normalized_path}.ready.json")"
+rclone_copyto "$out_file" "$(remote_path "$normalized_path")"
+rclone_copyto "$ready_file" "$(remote_path "${normalized_path}.ready.json")"
 
 echo "transcode: ready ${normalized_path}"
 `
@@ -1634,36 +2208,58 @@ func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView
 		return nil, err
 	}
 	var out []livestreamFileView
+	var outMu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
 	for _, conf := range confs {
-		name := strings.TrimSuffix(strings.TrimSuffix(conf.Path, "/recordings/"), "/")
-		rawPrefix := name + "/recordings/edits/livestream/"
-		rawFiles, err := h.listSpacesFilesOnly(ctx, rawPrefix)
-		if err != nil {
-			continue
-		}
-		normalizedPrefix := name + "/recordings/normalized/livestream/"
-		normalizedFiles, err := h.listSpacesFilesOnly(ctx, normalizedPrefix)
-		if err != nil {
-			normalizedFiles = nil
-		}
-		processed := make(map[string]bool, len(normalizedFiles))
-		for _, f := range normalizedFiles {
-			processed[f.Name] = true
-		}
-		for _, f := range rawFiles {
-			normalizedPath, err := livestreamNormalizedPath(f.Path)
-			if err != nil {
-				continue
+		conf := conf
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
 			}
-			out = append(out, livestreamFileView{
-				Conference:     name,
-				Name:           f.Name,
-				RawPath:        f.Path,
-				NormalizedPath: normalizedPath,
-				Processed:      processed[f.Name],
-			})
-		}
+			name := strings.TrimSuffix(strings.TrimSuffix(conf.Path, "/recordings/"), "/")
+			rawPrefix := name + "/recordings/edits/livestream/"
+			rawFiles, err := h.listSpacesFilesOnly(ctx, rawPrefix)
+			if err != nil {
+				return
+			}
+			normalizedPrefix := name + "/recordings/normalized/livestream/"
+			normalizedFiles, err := h.listSpacesFilesOnly(ctx, normalizedPrefix)
+			if err != nil {
+				normalizedFiles = nil
+			}
+			processed := make(map[string]bool, len(normalizedFiles))
+			for _, f := range normalizedFiles {
+				processed[f.Name] = true
+			}
+			var files []livestreamFileView
+			for _, f := range rawFiles {
+				normalizedPath, err := livestreamNormalizedPath(f.Path)
+				if err != nil {
+					continue
+				}
+				files = append(files, livestreamFileView{
+					Conference:     name,
+					Name:           f.Name,
+					RawPath:        f.Path,
+					NormalizedPath: normalizedPath,
+					Processed:      processed[f.Name],
+				})
+			}
+			if len(files) == 0 {
+				return
+			}
+			outMu.Lock()
+			out = append(out, files...)
+			outMu.Unlock()
+		}()
 	}
+	wg.Wait()
 	sort.Slice(out, func(i, j int) bool {
 		if strings.ToLower(out[i].Conference) == strings.ToLower(out[j].Conference) {
 			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
