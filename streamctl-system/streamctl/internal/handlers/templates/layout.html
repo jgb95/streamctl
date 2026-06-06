@@ -39,7 +39,7 @@ header nav a {
 }
 header nav a:hover { color: var(--text); }
 header .right { margin-left: auto; }
-main { max-width: 980px; margin: 24px auto; padding: 0 24px; }
+main { max-width: 1320px; margin: 24px auto; padding: 0 16px; }
 h2 { font-size: 18px; margin: 24px 0 12px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
@@ -89,7 +89,14 @@ form { background: var(--panel); border: 1px solid var(--border); border-radius:
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .error { background: rgba(239,107,107,0.1); border: 1px solid var(--danger); color: var(--danger); padding: 10px; border-radius: 4px; margin-bottom: 16px; }
 .muted { color: var(--muted); }
-code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }
+.table-wrap { width: 100%; overflow-x: auto; }
+.livestream-table { table-layout: fixed; }
+.livestream-table th:nth-child(1), .livestream-table td:nth-child(1) { width: 110px; }
+.livestream-table th:nth-child(4), .livestream-table td:nth-child(4) { width: 110px; }
+.livestream-table th:nth-child(5), .livestream-table td:nth-child(5) { width: 96px; }
+.livestream-table td { vertical-align: top; }
+.livestream-table code { display: block; max-width: 100%; white-space: normal; }
 .unit-log { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin: 16px 0; overflow: hidden; }
 .unit-log header { padding: 12px 14px; border-bottom: 1px solid var(--border); gap: 10px; }
 .unit-log h3 { font-size: 15px; margin: 0; }
