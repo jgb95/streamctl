@@ -7,6 +7,7 @@
 
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
 {{if .Started}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Started GPU processing for {{.Started}}{{if .Job}} as <code>{{.Job}}</code>{{end}}</div>{{end}}
+{{if .Queued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Queued {{.Queued}} file{{if ne .Queued "1"}}s{{end}} for GPU processing.</div>{{end}}
 
 <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
 	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -117,10 +118,14 @@
 </div>
 
 {{if .Files}}
+<form id="queue-selected-form" method="post" action="/livestream-files/process-selected" style="background: none; border: none; padding: 0; margin: 0 0 10px 0;">
+	<button type="submit" class="btn btn-primary">Queue checked</button>
+</form>
 <div class="table-wrap">
 <table class="livestream-table">
 	<thead>
 		<tr>
+			<th><input type="checkbox" id="check-all-recordings" aria-label="Select all recordings"></th>
 			<th>Conference</th>
 			<th>Raw file</th>
 			<th>Normalized output</th>
@@ -131,6 +136,13 @@
 	<tbody>
 		{{range .Files}}
 		<tr>
+			<td>
+				{{if .ProcessingUnit}}
+				<input type="checkbox" disabled aria-label="Already queued">
+				{{else}}
+				<input type="checkbox" name="path" value="{{.RawPath}}" form="queue-selected-form" class="recording-check" aria-label="Select {{.RawPath}}">
+				{{end}}
+			</td>
 			<td>{{.Conference}}</td>
 			<td><code>{{.RawPath}}</code></td>
 			<td><code>{{.NormalizedPath}}</code></td>
@@ -181,6 +193,14 @@ if (gpuSize && gpuRegion) {
 			gpuRegion.appendChild(option);
 		}
 		if (!gpuRegion.value && gpuRegion.options.length) gpuRegion.options[0].selected = true;
+	});
+}
+const checkAll = document.getElementById('check-all-recordings');
+if (checkAll) {
+	checkAll.addEventListener('change', () => {
+		for (const checkbox of document.querySelectorAll('.recording-check')) {
+			checkbox.checked = checkAll.checked;
+		}
 	});
 }
 </script>

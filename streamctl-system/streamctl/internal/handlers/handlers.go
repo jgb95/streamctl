@@ -100,6 +100,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
 	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(h.livestreamFiles)))
 	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
+	mux.Handle("/livestream-files/process-selected", h.auth(http.HandlerFunc(h.livestreamFilesProcessSelected)))
 	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
@@ -894,6 +895,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
 	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue)
+	files = unprocessedLivestreamFiles(files)
 	gpuAvailability := h.gpuAvailability(r.Context())
 	h.render(w, "livestream_files.html", map[string]any{
 		"Files":           files,
@@ -904,6 +906,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"GPUAvailability": gpuAvailability,
 		"Started":         r.URL.Query().Get("started"),
 		"Job":             r.URL.Query().Get("job"),
+		"Queued":          r.URL.Query().Get("queued"),
 		"Error":           r.URL.Query().Get("err"),
 	})
 }
@@ -942,6 +945,49 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 	if item.UnitName != "" {
 		q.Set("job", item.UnitName)
 	}
+	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+}
+
+func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.Request) {
+	if !h.gpuWorkerConfigured() {
+		http.Error(w, "GPU worker is not configured", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	paths := r.Form["path"]
+	queued := 0
+	for _, rawPath := range paths {
+		rawPath = strings.TrimSpace(rawPath)
+		if rawPath == "" {
+			continue
+		}
+		if _, err := livestreamNormalizedPath(rawPath); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		item, err := h.DB.EnqueueGPUJob(rawPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("queueing GPU job failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := h.saveGPUJobLog(gpuJobView{
+			UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(rawPath)),
+			RawPath:     rawPath,
+			Description: "streamctl GPU transcode " + rawPath,
+			ActiveState: "queued",
+		}); err != nil {
+			log.Printf("saving queued GPU job %s failed: %v", rawPath, err)
+		}
+		queued++
+	}
+	if queued > 0 {
+		go h.dispatchGPUQueueOnce(context.Background())
+	}
+	q := url.Values{}
+	q.Set("queued", strconv.Itoa(queued))
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
 }
 
@@ -1227,6 +1273,14 @@ func isTerminalGPUJob(job gpuJobView) bool {
 	return job.ActiveState == "inactive" || job.ActiveState == "failed"
 }
 
+func isBlockingGPUJob(job gpuJobView) bool {
+	state := strings.TrimSpace(job.ActiveState)
+	if state == "" || state == "queued" {
+		return false
+	}
+	return !isTerminalGPUJob(job)
+}
+
 func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem) {
 	activeByRawPath := map[string]gpuJobView{}
 	for _, job := range jobs {
@@ -1255,6 +1309,17 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 	}
 }
 
+func unprocessedLivestreamFiles(files []livestreamFileView) []livestreamFileView {
+	out := files[:0]
+	for _, file := range files {
+		if file.Processed {
+			continue
+		}
+		out = append(out, file)
+	}
+	return out
+}
+
 func (h *Handler) gpuQueueDispatcher() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -1268,10 +1333,12 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	h.gpuQueueMu.Lock()
 	defer h.gpuQueueMu.Unlock()
 	if !h.gpuWorkerConfigured() {
+		log.Printf("GPU queue dispatch skipped: GPU worker is not configured")
 		return
 	}
 	worker := h.gpuWorkerView(ctx)
 	if worker.Managed && worker.Status != "active" {
+		log.Printf("GPU queue dispatch skipped: worker status=%q error=%q", worker.Status, worker.Error)
 		return
 	}
 	host := strings.TrimSpace(h.GPUWorkerHost)
@@ -1279,11 +1346,16 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 		host = worker.SSHHost
 	}
 	if host == "" {
+		log.Printf("GPU queue dispatch skipped: worker has no SSH host")
 		return
 	}
 	status := h.gpuStatus(ctx, worker)
+	if status.Error != "" {
+		log.Printf("GPU queue status warning: %s", status.Error)
+	}
 	for _, job := range status.Jobs {
-		if !isTerminalGPUJob(job) {
+		if isBlockingGPUJob(job) {
+			log.Printf("GPU queue dispatch skipped: active job %s raw=%s active=%s result=%s", job.UnitName, job.RawPath, job.ActiveState, job.Result)
 			return
 		}
 	}
@@ -1291,6 +1363,9 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("loading next queued GPU job failed: %v", err)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("GPU queue dispatch skipped: no queued jobs")
 		}
 		return
 	}
