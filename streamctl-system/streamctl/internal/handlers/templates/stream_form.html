@@ -17,7 +17,7 @@
 			{{if and .Stream .Stream.Videos}}
 				{{range $i, $v := .Stream.Videos}}
 				<li class="clip-row">
-					<input type="text" name="video_file" value="{{$v}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
+					<input type="text" name="video_file" value="{{$v}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/stage-two/file.mp4" required>
 					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
@@ -25,7 +25,7 @@
 				{{end}}
 			{{else}}
 				<li class="clip-row">
-					<input type="text" name="video_file" value="{{if and (not .Stream) .Videos}}{{index .Videos 0}}{{end}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
+					<input type="text" name="video_file" value="{{if and (not .Stream) .Videos}}{{index .Videos 0}}{{end}}" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/stage-two/file.mp4" required>
 					<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 					<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 					<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
@@ -37,7 +37,7 @@
 		</datalist>
 		<template id="clip-template">
 			<li class="clip-row">
-				<input type="text" name="video_file" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/livestream/file.mp4" required>
+				<input type="text" name="video_file" list="video-files" placeholder="file.mp4 or vienna/recordings/edits/stage-two/file.mp4" required>
 				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
@@ -55,7 +55,7 @@
 		{{else}}
 		<ol id="clips" class="clip-list">
 			<li class="clip-row">
-				<input type="text" name="video_file" list="video-files" placeholder="vienna/recordings/edits/livestream/file.mp4" required>
+				<input type="text" name="video_file" list="video-files" placeholder="vienna/recordings/edits/stage-two/file.mp4" required>
 				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>
@@ -64,7 +64,7 @@
 		<datalist id="video-files"></datalist>
 		<template id="clip-template">
 			<li class="clip-row">
-				<input type="text" name="video_file" list="video-files" placeholder="vienna/recordings/edits/livestream/file.mp4" required>
+				<input type="text" name="video_file" list="video-files" placeholder="vienna/recordings/edits/stage-two/file.mp4" required>
 				<button type="button" class="btn" onclick="moveClip(this,-1)">&uarr;</button>
 				<button type="button" class="btn" onclick="moveClip(this,1)">&darr;</button>
 				<button type="button" class="btn btn-danger" onclick="removeClip(this)">&times;</button>

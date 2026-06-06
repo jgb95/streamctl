@@ -879,7 +879,7 @@ func (m *Manager) normalizedClipPath(source string) string {
 }
 
 func (m *Manager) normalizedRemoteClipPath(source string) string {
-	return strings.Replace(source, "/recordings/edits/livestream/", "/recordings/normalized/livestream/", 1)
+	return strings.Replace(source, "/recordings/edits/", "/recordings/normalized/", 1)
 }
 
 func (m *Manager) remoteObjectPath(source string) string {

@@ -2105,7 +2105,7 @@ func gpuTranscodeScript() string {
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
-  echo "usage: $0 <conference>/recordings/edits/livestream/<file.mp4>" >&2
+  echo "usage: $0 <conference>/recordings/edits/<path>/<file.mp4>" >&2
   exit 2
 fi
 
@@ -2121,16 +2121,17 @@ rclone_transfers="${RCLONE_TRANSFERS:-1}"
 rclone_checkers="${RCLONE_CHECKERS:-8}"
 
 case "$raw_path" in
-  */recordings/edits/livestream/*) ;;
+  */recordings/edits/*) ;;
   *)
-    echo "path must be <conference>/recordings/edits/livestream/<file>" >&2
+    echo "path must be <conference>/recordings/edits/<path>/<file>" >&2
     exit 2
     ;;
 esac
 
-conference="${raw_path%%/recordings/edits/livestream/*}"
+conference="${raw_path%%/recordings/edits/*}"
+relative_path="${raw_path#${conference}/recordings/edits/}"
 filename="${raw_path##*/}"
-normalized_path="${conference}/recordings/normalized/livestream/${filename}"
+normalized_path="${conference}/recordings/normalized/${relative_path}"
 
 remote_path() {
   case "$remote" in
@@ -2223,19 +2224,19 @@ func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView
 				return
 			}
 			name := strings.TrimSuffix(strings.TrimSuffix(conf.Path, "/recordings/"), "/")
-			rawPrefix := name + "/recordings/edits/livestream/"
-			rawFiles, err := h.listSpacesFilesOnly(ctx, rawPrefix)
+			rawPrefix := name + "/recordings/edits/"
+			rawFiles, err := h.listSpacesFilesRecursive(ctx, rawPrefix)
 			if err != nil {
 				return
 			}
-			normalizedPrefix := name + "/recordings/normalized/livestream/"
-			normalizedFiles, err := h.listSpacesFilesOnly(ctx, normalizedPrefix)
+			normalizedPrefix := name + "/recordings/normalized/"
+			normalizedFiles, err := h.listSpacesFilesRecursive(ctx, normalizedPrefix)
 			if err != nil {
 				normalizedFiles = nil
 			}
 			processed := make(map[string]bool, len(normalizedFiles))
 			for _, f := range normalizedFiles {
-				processed[f.Name] = true
+				processed[f.Path] = true
 			}
 			var files []livestreamFileView
 			for _, f := range rawFiles {
@@ -2248,7 +2249,7 @@ func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView
 					Name:           f.Name,
 					RawPath:        f.Path,
 					NormalizedPath: normalizedPath,
-					Processed:      processed[f.Name],
+					Processed:      processed[normalizedPath],
 				})
 			}
 			if len(files) == 0 {
@@ -2274,17 +2275,40 @@ func (h *Handler) listSpacesFilesOnly(ctx context.Context, prefix string) ([]spa
 	return files, err
 }
 
+func (h *Handler) listSpacesFilesRecursive(ctx context.Context, prefix string) ([]spacesEntry, error) {
+	lines, err := h.rcloneLsf(ctx, prefix, "--files-only", "--recursive")
+	if err != nil {
+		return nil, err
+	}
+	var files []spacesEntry
+	for _, line := range lines {
+		line = strings.TrimSpace(strings.ReplaceAll(line, "\\", "/"))
+		if line == "" || strings.HasSuffix(line, "/") {
+			continue
+		}
+		name := path.Base(line)
+		if !isVideoFile(name) {
+			continue
+		}
+		files = append(files, spacesEntry{Name: name, Path: prefix + line})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
+	})
+	return files, nil
+}
+
 func livestreamNormalizedPath(rawPath string) (string, error) {
 	rawPath = strings.TrimSpace(strings.ReplaceAll(rawPath, "\\", "/"))
 	parts := strings.Split(rawPath, "/")
-	if len(parts) < 5 || parts[1] != "recordings" || parts[2] != "edits" || parts[3] != "livestream" {
-		return "", fmt.Errorf("path must be <conference>/recordings/edits/livestream/<file>")
+	if len(parts) < 5 || parts[1] != "recordings" || parts[2] != "edits" {
+		return "", fmt.Errorf("path must be <conference>/recordings/edits/<path>/<file>")
 	}
 	file := parts[len(parts)-1]
 	if !isVideoFile(file) {
 		return "", fmt.Errorf("path must be a video file")
 	}
-	return parts[0] + "/recordings/normalized/livestream/" + file, nil
+	return parts[0] + "/recordings/normalized/" + strings.Join(parts[3:], "/"), nil
 }
 
 // ---------- Nostr ----------
