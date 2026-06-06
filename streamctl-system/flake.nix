@@ -2,12 +2,11 @@
   description = "streamctl — scheduled RTMP streamer with NixOS deployment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils }:
     let
       # The streamctl Go package, parameterized by pkgs so it works on any system.
       streamctlPackage = pkgs: pkgs.buildGoModule {
@@ -301,7 +300,6 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        unstablePkgs = nixpkgs-unstable.legacyPackages.${system};
       in
       {
         packages.default = streamctlPackage pkgs;
@@ -315,7 +313,7 @@
             sqlite
             ffmpeg
             terraform
-            unstablePkgs.doctl
+            doctl
             gnumake
             openssl
             nixos-rebuild
