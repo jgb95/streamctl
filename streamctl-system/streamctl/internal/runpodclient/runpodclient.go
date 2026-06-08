@@ -28,6 +28,9 @@ type Pod struct {
 	PublicIP      string         `json:"publicIp"`
 	CostPerHr     float64        `json:"costPerHr"`
 	MachineID     string         `json:"machineId"`
+	GPUTypeID     string         `json:"gpuTypeId"`
+	ImageName     string         `json:"imageName"`
+	CreatedAt     string         `json:"createdAt"`
 }
 
 type Runtime struct {

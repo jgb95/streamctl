@@ -834,12 +834,21 @@ type livestreamFileView struct {
 type gpuWorkerView struct {
 	Managed    bool
 	Configured bool
+	Provider   string
 	ID         int64
+	ExternalID string
 	Name       string
 	Status     string
 	RawStatus  string
 	IP         string
 	SSHHost    string
+	GPUType    string
+	Image      string
+	Region     string
+	CloudType  string
+	CostHourly float64
+	CreatedAt  string
+	MachineID  string
 	Error      string
 }
 
@@ -2002,11 +2011,15 @@ func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
 		SSHHost:    strings.TrimSpace(h.GPUWorkerHost),
 	}
 	if !view.Managed {
+		if strings.TrimSpace(view.SSHHost) != "" {
+			view.Provider = "external"
+		}
 		return view
 	}
 	if h.hasRunPodToken() {
 		return h.runpodWorkerView(ctx, view)
 	}
+	view.Provider = "DigitalOcean"
 	client, err := h.doClient()
 	if err != nil {
 		view.Status = "api error"
@@ -2025,10 +2038,15 @@ func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
 	}
 	d := droplets[0]
 	view.ID = d.ID
+	view.ExternalID = strconv.FormatInt(d.ID, 10)
 	view.Name = d.Name
 	view.RawStatus = d.Status
 	view.Status = d.Status
 	view.IP = d.PublicIPv4()
+	view.GPUType = d.SizeSlug
+	view.Region = d.Region.Slug
+	view.Image = h.GPUDropletImage
+	view.CreatedAt = d.CreatedAt
 	if view.IP != "" {
 		view.SSHHost = firstNonEmptyString(h.GPUWorkerUser, "root") + "@" + view.IP
 	}
@@ -2196,6 +2214,10 @@ func (h *Handler) validateGPUSizeRegion(ctx context.Context, client *doclient.Cl
 }
 
 func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuWorkerView {
+	view.Provider = "RunPod"
+	view.GPUType = h.RunPodGPUType
+	view.Image = h.RunPodImage
+	view.CloudType = h.RunPodCloudType
 	client, err := h.runpodClient()
 	if err != nil {
 		view.Status = "api error"
@@ -2213,9 +2235,15 @@ func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuW
 			continue
 		}
 		view.ID = 1
+		view.ExternalID = pod.ID
 		view.Name = pod.Name
 		view.RawStatus = pod.Status()
 		view.Status = view.RawStatus
+		view.CostHourly = pod.CostPerHr
+		view.MachineID = pod.MachineID
+		view.GPUType = firstNonEmptyString(pod.GPUTypeID, view.GPUType)
+		view.Image = firstNonEmptyString(pod.ImageName, view.Image)
+		view.CreatedAt = pod.CreatedAt
 		view.SSHHost = pod.SSHHost(firstNonEmptyString(h.GPUWorkerUser, "root"))
 		if view.SSHHost != "" {
 			view.SSHHost = appendSSHIdentity(view.SSHHost, gpuWorkerSSHKeyPath)

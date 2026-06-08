@@ -14,12 +14,12 @@
 <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
 	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
 		<strong>GPU worker</strong>
+		{{if .GPUWorker.Provider}}<span class="muted">{{.GPUWorker.Provider}}</span>{{end}}
 		{{if .GPUWorker.Managed}}
 			{{if .GPUWorker.ID}}
 				<span class="badge {{if eq .GPUWorker.Status "active"}}badge-active{{else}}badge-inactive{{end}}">{{.GPUWorker.Status}}</span>
-				{{if .GPUWorker.SSHHost}}<code>{{.GPUWorker.SSHHost}}</code>{{end}}
 				<form method="post" action="/gpu-worker/destroy" style="background: none; border: none; padding: 0; margin-left: auto;" onsubmit="return confirm('Destroy the GPU worker droplet?');">
-					<button type="submit" class="btn btn-danger">Destroy GPU</button>
+					<button type="submit" class="btn btn-danger">Stop worker</button>
 				</form>
 			{{else}}
 				<span class="badge badge-inactive">not created</span>
@@ -43,11 +43,26 @@
 			{{end}}
 		{{else if .GPUConfigured}}
 			<span class="badge badge-active">external</span>
-			<code>{{.GPUWorkerHost}}</code>
 		{{else}}
 			<span class="badge badge-inactive">not configured</span>
 		{{end}}
 	</div>
+	{{if or .GPUWorker.ID .GPUWorker.SSHHost}}
+	<div class="worker-meta">
+		{{if .GPUWorker.ExternalID}}<div><span>ID</span><code>{{.GPUWorker.ExternalID}}</code></div>{{end}}
+		{{if .GPUWorker.Name}}<div><span>Name</span><code>{{.GPUWorker.Name}}</code></div>{{end}}
+		{{if .GPUWorker.RawStatus}}<div><span>Provider status</span><code>{{.GPUWorker.RawStatus}}</code></div>{{end}}
+		{{if .GPUWorker.GPUType}}<div><span>GPU type</span><code>{{.GPUWorker.GPUType}}</code></div>{{end}}
+		{{if .GPUWorker.Region}}<div><span>Region</span><code>{{.GPUWorker.Region}}</code></div>{{end}}
+		{{if .GPUWorker.CloudType}}<div><span>Cloud</span><code>{{.GPUWorker.CloudType}}</code></div>{{end}}
+		{{if .GPUWorker.Image}}<div><span>Image</span><code>{{.GPUWorker.Image}}</code></div>{{end}}
+		{{if .GPUWorker.MachineID}}<div><span>Machine</span><code>{{.GPUWorker.MachineID}}</code></div>{{end}}
+		{{if .GPUWorker.IP}}<div><span>IP</span><code>{{.GPUWorker.IP}}</code></div>{{end}}
+		{{if .GPUWorker.SSHHost}}<div><span>SSH</span><code>{{.GPUWorker.SSHHost}}</code></div>{{end}}
+		{{if .GPUWorker.CreatedAt}}<div><span>Created</span><code>{{.GPUWorker.CreatedAt}}</code></div>{{end}}
+		{{if .GPUWorker.CostHourly}}<div><span>Cost</span><code>${{printf "%.2f" .GPUWorker.CostHourly}}/hr</code></div>{{end}}
+	</div>
+	{{end}}
 {{if .GPUWorker.Error}}<div class="inline-error">{{.GPUWorker.Error}}</div>{{end}}
 	{{if not .GPUConfigured}}<div class="hint">Files can be inspected, but processing buttons are disabled until a GPU worker is configured.</div>{{end}}
 	{{if .QueueNeedsWorker}}
