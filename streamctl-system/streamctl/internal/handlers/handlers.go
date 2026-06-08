@@ -1233,7 +1233,7 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
 			}
 			if full.RawPath != "" {
-				h.markGPUQueueTerminal(full.RawPath, full)
+				h.markGPUQueueTerminal(ctx, full.RawPath, full)
 			}
 			h.destroyManagedGPUAfterTerminalJob(ctx, full)
 			go h.dispatchGPUQueueOnce(context.Background())
@@ -1387,7 +1387,7 @@ func (h *Handler) monitorGPUJob(unitName, rawPath, host string) {
 			if err := h.saveGPUJobLog(full); err != nil {
 				log.Printf("saving GPU job %s journal failed: %v", unitName, err)
 			}
-			h.markGPUQueueTerminal(rawPath, full)
+			h.markGPUQueueTerminal(ctx, rawPath, full)
 			h.destroyManagedGPUAfterTerminalJob(ctx, full)
 			go h.dispatchGPUQueueOnce(context.Background())
 			return
@@ -1738,7 +1738,7 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	go h.monitorGPUJob(unitName, item.RawPath, host)
 }
 
-func (h *Handler) markGPUQueueTerminal(rawPath string, job gpuJobView) {
+func (h *Handler) markGPUQueueTerminal(ctx context.Context, rawPath string, job gpuJobView) {
 	status := "finished"
 	if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 		status = "failed"
@@ -1746,6 +1746,9 @@ func (h *Handler) markGPUQueueTerminal(rawPath string, job gpuJobView) {
 	lastError := ""
 	if status == "failed" {
 		lastError = firstNonEmptyString(strings.TrimSpace(job.Error), strings.TrimSpace(job.Result), strings.TrimSpace(job.ActiveState))
+	} else if err := h.verifyNormalizedOutput(ctx, rawPath); err != nil {
+		status = "failed"
+		lastError = "post-processing verification failed: " + err.Error()
 	}
 	if err := h.DB.MarkGPUQueueFinished(rawPath, status, lastError); err != nil {
 		log.Printf("marking GPU queue %s %s failed: %v", rawPath, status, err)
@@ -2684,6 +2687,7 @@ cat > "$ready_file" <<EOF
   "video_bitrate": "${video_bitrate}",
   "audio_bitrate": "${audio_bitrate}",
   "encoder": "h264_nvenc",
+  "verified_by": "ffprobe",
   "status": "ready"
 }
 EOF
@@ -3125,6 +3129,87 @@ func (h *Handler) rcloneLsf(ctx context.Context, prefix string, extraArgs ...str
 		return nil, nil
 	}
 	return strings.Split(text, "\n"), nil
+}
+
+func (h *Handler) rcloneCat(ctx context.Context, prefix string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rclone", "cat", h.remotePath(prefix))
+	if strings.TrimSpace(h.RcloneConfig) != "" {
+		cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+h.RcloneConfig)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("rclone cat %s: %s", prefix, msg)
+	}
+	return out, nil
+}
+
+func (h *Handler) spacesFileExists(ctx context.Context, filePath string) (bool, error) {
+	filePath = strings.Trim(strings.ReplaceAll(filePath, "\\", "/"), "/")
+	if filePath == "" {
+		return false, fmt.Errorf("empty file path")
+	}
+	dir := path.Dir(filePath)
+	if dir == "." {
+		dir = ""
+	}
+	if dir != "" {
+		dir += "/"
+	}
+	want := path.Base(filePath)
+	lines, err := h.rcloneLsf(ctx, dir, "--files-only")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range lines {
+		if strings.Trim(strings.TrimSpace(line), "/") == want {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *Handler) verifyNormalizedOutput(ctx context.Context, rawPath string) error {
+	normalizedPath, err := livestreamNormalizedPath(rawPath)
+	if err != nil {
+		return err
+	}
+	exists, err := h.spacesFileExists(ctx, normalizedPath)
+	if err != nil {
+		return fmt.Errorf("checking normalized object: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("normalized object missing: %s", normalizedPath)
+	}
+	readyPath := normalizedPath + ".ready.json"
+	ready, err := h.rcloneCat(ctx, readyPath)
+	if err != nil {
+		return fmt.Errorf("reading ready marker %s: %w", readyPath, err)
+	}
+	var marker struct {
+		RawPath        string `json:"raw_path"`
+		NormalizedPath string `json:"normalized_path"`
+		Status         string `json:"status"`
+	}
+	if err := json.Unmarshal(ready, &marker); err != nil {
+		return fmt.Errorf("parsing ready marker %s: %w", readyPath, err)
+	}
+	if marker.Status != "ready" {
+		return fmt.Errorf("ready marker status is %q", marker.Status)
+	}
+	if strings.Trim(marker.RawPath, "/") != strings.Trim(rawPath, "/") {
+		return fmt.Errorf("ready marker raw path mismatch: %q", marker.RawPath)
+	}
+	if strings.Trim(marker.NormalizedPath, "/") != strings.Trim(normalizedPath, "/") {
+		return fmt.Errorf("ready marker normalized path mismatch: %q", marker.NormalizedPath)
+	}
+	return nil
 }
 
 func (h *Handler) remotePath(prefix string) string {

@@ -106,6 +106,7 @@ cat > "$ready_file" <<EOF
   "video_bitrate": "${video_bitrate}",
   "audio_bitrate": "${audio_bitrate}",
   "encoder": "h264_nvenc",
+  "verified_by": "ffprobe",
   "status": "ready"
 }
 EOF
