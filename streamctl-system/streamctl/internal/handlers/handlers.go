@@ -97,6 +97,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/start/", h.auth(http.HandlerFunc(h.streamStart)))
 	mux.Handle("/streams/stop/", h.auth(http.HandlerFunc(h.streamStop)))
 	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
+	mux.Handle("/streams/preview/", h.auth(http.HandlerFunc(h.streamPreview)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
 	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(h.livestreamFiles)))
 	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
@@ -401,6 +402,23 @@ func (h *Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "stream_logs.html", map[string]any{
 		"Stream": s,
 		"Units":  h.Systemd.Logs(id),
+	})
+}
+
+func (h *Handler) streamPreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "/streams/preview/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	s, err := h.DB.GetStream(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	h.render(w, "stream_preview.html", map[string]any{
+		"Stream":  s,
+		"LiveURL": fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID),
 	})
 }
 

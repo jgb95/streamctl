@@ -56,7 +56,12 @@
 				<span class="muted" style="font-size: 12px;">-</span>
 				{{end}}
 			</td>
-			<td><a href="{{.LiveURL}}" class="btn">Playlist</a></td>
+			<td>
+				<div class="actions">
+					<a href="/streams/preview/{{.ID}}" class="btn">Preview</a>
+					<a href="{{.LiveURL}}" class="btn">Playlist</a>
+				</div>
+			</td>
 			<td>
 				<div class="actions">
 					{{if eq .Status "active"}}

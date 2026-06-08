@@ -1,0 +1,46 @@
+{{define "stream_preview.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+	<div>
+		<h2 style="margin: 0;">Preview: {{.Stream.Name}}</h2>
+		<div class="muted" style="font-size: 12px;">{{.Stream.OnCalendar}} - {{.Stream.ScheduleType}}</div>
+	</div>
+	<a href="/" class="btn" style="margin-left: auto;">Back</a>
+	<a href="{{.LiveURL}}" class="btn">Playlist</a>
+</div>
+
+<section class="preview-panel">
+	<video id="hls-preview" controls playsinline preload="metadata"></video>
+	<div id="preview-status" class="hint">Loading preview...</div>
+	<div class="unit-meta" style="border-bottom: 0;">
+		<span>HLS playlist: <code>{{.LiveURL}}</code></span>
+	</div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<script>
+const video = document.getElementById('hls-preview');
+const statusEl = document.getElementById('preview-status');
+const src = {{printf "%q" .LiveURL}};
+
+function setStatus(text) {
+	if (statusEl) statusEl.textContent = text;
+}
+
+if (video.canPlayType('application/vnd.apple.mpegurl')) {
+	video.src = src;
+	setStatus('Native HLS preview ready.');
+} else if (window.Hls && Hls.isSupported()) {
+	const hls = new Hls({ lowLatencyMode: true });
+	hls.loadSource(src);
+	hls.attachMedia(video);
+	hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus('HLS preview ready.'));
+	hls.on(Hls.Events.ERROR, (_, data) => {
+		const detail = data && data.details ? data.details : 'unknown error';
+		setStatus(`Preview error: ${detail}`);
+	});
+} else {
+	setStatus('This browser cannot play HLS previews.');
+}
+</script>
+{{end}}
