@@ -2257,7 +2257,7 @@ fi
 
 raw_path="${1#/}"
 remote="${SPACES_REMOTE:-spaces:btcpp}"
-workdir="${WORKDIR:-/tmp/streamctl-transcode}"
+workroot="${WORKDIR:-/tmp/streamctl-transcode}"
 video_bitrate="${VIDEO_BITRATE:-6800k}"
 audio_bitrate="${AUDIO_BITRATE:-160k}"
 rclone_stats="${RCLONE_STATS:-30s}"
@@ -2306,8 +2306,26 @@ rclone_download() {
     "$@"
 }
 
+safe_clean_workroot() {
+  case "$workroot" in
+    /tmp/streamctl-transcode|/tmp/streamctl-transcode/*) ;;
+    *)
+      echo "refusing to clean unsafe WORKDIR: $workroot" >&2
+      exit 2
+      ;;
+  esac
+  mkdir -p "$workroot"
+  find "$workroot" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
 export RCLONE_CONFIG="${RCLONE_CONFIG:-/root/rclone.conf}"
+safe_clean_workroot
+workdir="${workroot}/${filename}.job-$$"
 mkdir -p "$workdir"
+cleanup() {
+  rm -rf -- "$workdir"
+}
+trap cleanup EXIT
 raw_file="${workdir}/${filename}"
 out_file="${workdir}/${filename%.mp4}.normalized.mp4"
 ready_file="${workdir}/${filename}.ready.json"
