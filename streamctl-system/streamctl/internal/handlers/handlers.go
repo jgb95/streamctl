@@ -1156,16 +1156,23 @@ func (h *Handler) hydrateGPUJobFromCache(job *gpuJobView) {
 		return
 	}
 	cached, err := h.DB.GetGPUJobLog(job.UnitName)
+	if err == nil {
+		job.RawPath = cached.RawPath
+		if job.Host == "" {
+			job.Host = cached.Host
+		}
+		if job.Description == "" {
+			job.Description = cached.Description
+		}
+		if strings.TrimSpace(job.RawPath) != "" {
+			return
+		}
+	}
+	item, err := h.DB.GetGPUQueueItemByUnitName(job.UnitName)
 	if err != nil {
 		return
 	}
-	job.RawPath = cached.RawPath
-	if job.Host == "" {
-		job.Host = cached.Host
-	}
-	if job.Description == "" {
-		job.Description = cached.Description
-	}
+	job.RawPath = item.RawPath
 }
 
 func (h *Handler) appendCachedGPUJobs(status gpuStatusView) gpuStatusView {
@@ -1295,6 +1302,7 @@ func (h *Handler) saveGPUJobLog(job gpuJobView) error {
 	if strings.TrimSpace(job.UnitName) == "" {
 		return nil
 	}
+	h.hydrateGPUJobFromCache(&job)
 	return h.DB.UpsertGPUJobLog(db.GPUJobLog{
 		UnitName:    job.UnitName,
 		RawPath:     job.RawPath,

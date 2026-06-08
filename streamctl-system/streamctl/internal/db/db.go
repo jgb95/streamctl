@@ -672,6 +672,21 @@ func (db *DB) GetGPUQueueItemByRawPath(rawPath string) (*GPUJobQueueItem, error)
 	return &item, nil
 }
 
+func (db *DB) GetGPUQueueItemByUnitName(unitName string) (*GPUJobQueueItem, error) {
+	var item GPUJobQueueItem
+	var startedAt, finishedAt sql.NullTime
+	err := db.QueryRow(`
+		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		FROM gpu_job_queue WHERE unit_name = ?
+	`, unitName).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt)
+	if err != nil {
+		return nil, err
+	}
+	item.StartedAt = nullTimePtr(startedAt)
+	item.FinishedAt = nullTimePtr(finishedAt)
+	return &item, nil
+}
+
 func (db *DB) NextQueuedGPUJob() (*GPUJobQueueItem, error) {
 	var item GPUJobQueueItem
 	var startedAt, finishedAt sql.NullTime
