@@ -1130,9 +1130,11 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 	}
 	for _, unit := range dedupeGPUUnits(units) {
 		job := h.gpuJob(ctx, host, unit, false)
+		h.hydrateGPUJobFromCache(&job)
 		status.Jobs = append(status.Jobs, job)
 		if isTerminalGPUJob(job) {
 			full := h.gpuJob(ctx, host, unit, true)
+			h.hydrateGPUJobFromCache(&full)
 			if err := h.saveGPUJobLog(full); err != nil {
 				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
 			}
@@ -1147,6 +1149,23 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 		}
 	}
 	return h.appendCachedGPUJobs(status)
+}
+
+func (h *Handler) hydrateGPUJobFromCache(job *gpuJobView) {
+	if job == nil || strings.TrimSpace(job.UnitName) == "" || strings.TrimSpace(job.RawPath) != "" {
+		return
+	}
+	cached, err := h.DB.GetGPUJobLog(job.UnitName)
+	if err != nil {
+		return
+	}
+	job.RawPath = cached.RawPath
+	if job.Host == "" {
+		job.Host = cached.Host
+	}
+	if job.Description == "" {
+		job.Description = cached.Description
+	}
 }
 
 func (h *Handler) appendCachedGPUJobs(status gpuStatusView) gpuStatusView {
