@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -51,5 +52,30 @@ func TestGPUQueueTracksAttemptsAndErrors(t *testing.T) {
 	}
 	if item.Status != "queued" || item.AttemptCount != 1 || item.LastError != "ssh connection refused" {
 		t.Fatalf("requeued item should preserve last attempt context: %#v", item)
+	}
+}
+
+func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := database.EnqueueGPUJob("vienna/recordings/edits/talk.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueRunning(item.ID, "streamctl-gpu-talk.service"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueFinished(item.RawPath, "finished", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueFinished(item.RawPath, "failed", "duplicate terminal event"); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows for duplicate terminal update, got %v", err)
 	}
 }

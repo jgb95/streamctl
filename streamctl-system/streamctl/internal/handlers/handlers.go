@@ -1771,7 +1771,7 @@ func (h *Handler) markGPUQueueTerminal(ctx context.Context, rawPath string, job 
 		status = "failed"
 		lastError = "post-processing verification failed: " + err.Error()
 	}
-	if err := h.DB.MarkGPUQueueFinished(rawPath, status, lastError); err != nil {
+	if err := h.DB.MarkGPUQueueFinished(rawPath, status, lastError); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		log.Printf("marking GPU queue %s %s failed: %v", rawPath, status, err)
 	}
 }

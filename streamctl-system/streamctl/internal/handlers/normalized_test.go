@@ -1,0 +1,88 @@
+package handlers
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestValidateNormalizedStreamVideos(t *testing.T) {
+	binDir := t.TempDir()
+	rclonePath := filepath.Join(binDir, "rclone")
+	script := `#!/bin/sh
+set -eu
+cmd="$1"
+target="$2"
+case "$cmd:$target" in
+  lsf:spaces:btcpp/vienna/recordings/normalized/stage/)
+    printf 'talk.mp4\n'
+    ;;
+  lsf:spaces:btcpp/vienna/recordings/normalized/missing/)
+    ;;
+  cat:spaces:btcpp/vienna/recordings/normalized/stage/talk.mp4.ready.json)
+    cat <<'JSON'
+{"raw_path":"vienna/recordings/edits/stage/talk.mp4","normalized_path":"vienna/recordings/normalized/stage/talk.mp4","status":"ready","verified_by":"ffprobe"}
+JSON
+    ;;
+  *)
+    echo "unexpected rclone call: $*" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(rclonePath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	h := &Handler{Remote: "spaces:btcpp"}
+	if err := h.validateNormalizedStreamVideos(context.Background(), []string{"vienna/recordings/edits/stage/talk.mp4"}); err != nil {
+		t.Fatalf("expected verified normalized output to pass: %v", err)
+	}
+
+	err := h.validateNormalizedStreamVideos(context.Background(), []string{"vienna/recordings/edits/missing/talk.mp4"})
+	if err == nil || !strings.Contains(err.Error(), "not ready for scheduling") {
+		t.Fatalf("expected missing normalized output to fail clearly, got %v", err)
+	}
+
+	err = h.validateNormalizedStreamVideos(context.Background(), []string{"vienna/recordings/normalized/stage/talk.mp4"})
+	if err == nil || !strings.Contains(err.Error(), "schedule the original") {
+		t.Fatalf("expected direct normalized path to fail clearly, got %v", err)
+	}
+}
+
+func TestVerifyNormalizedOutputRejectsMismatchedReadyMarker(t *testing.T) {
+	binDir := t.TempDir()
+	rclonePath := filepath.Join(binDir, "rclone")
+	script := `#!/bin/sh
+set -eu
+cmd="$1"
+target="$2"
+case "$cmd:$target" in
+  lsf:spaces:btcpp/vienna/recordings/normalized/stage/)
+    printf 'talk.mp4\n'
+    ;;
+  cat:spaces:btcpp/vienna/recordings/normalized/stage/talk.mp4.ready.json)
+    cat <<'JSON'
+{"raw_path":"vienna/recordings/edits/stage/other.mp4","normalized_path":"vienna/recordings/normalized/stage/talk.mp4","status":"ready"}
+JSON
+    ;;
+  *)
+    echo "unexpected rclone call: $*" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(rclonePath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	h := &Handler{Remote: "spaces:btcpp"}
+	err := h.verifyNormalizedOutput(context.Background(), "vienna/recordings/edits/stage/talk.mp4")
+	if err == nil || !strings.Contains(err.Error(), "raw path mismatch") {
+		t.Fatalf("expected ready marker mismatch to fail clearly, got %v", err)
+	}
+}

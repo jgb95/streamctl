@@ -862,12 +862,22 @@ func (db *DB) MarkGPUQueueFinished(rawPath, status, lastError string) error {
 	if status == "" {
 		status = "finished"
 	}
-	_, err := db.Exec(`
+	result, err := db.Exec(`
 		UPDATE gpu_job_queue
 		SET status = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP
 		WHERE raw_path = ? AND status IN ('queued', 'running')
 	`, status, lastError, rawPath)
-	return err
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func nullTimePtr(t sql.NullTime) *time.Time {
