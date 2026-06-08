@@ -101,6 +101,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(h.livestreamFiles)))
 	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
 	mux.Handle("/livestream-files/process-selected", h.auth(http.HandlerFunc(h.livestreamFilesProcessSelected)))
+	mux.Handle("/livestream-files/requeue", h.auth(http.HandlerFunc(h.livestreamFileRequeue)))
 	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
@@ -907,6 +908,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"Started":         r.URL.Query().Get("started"),
 		"Job":             r.URL.Query().Get("job"),
 		"Queued":          r.URL.Query().Get("queued"),
+		"Requeued":        r.URL.Query().Get("requeued"),
 		"Error":           r.URL.Query().Get("err"),
 	})
 }
@@ -988,6 +990,39 @@ func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.
 	}
 	q := url.Values{}
 	q.Set("queued", strconv.Itoa(queued))
+	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+}
+
+func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rawPath := strings.TrimSpace(r.FormValue("path"))
+	if _, err := livestreamNormalizedPath(rawPath); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.DB.RequeueRunningGPUJob(rawPath); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "job is not currently running", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, fmt.Sprintf("requeueing GPU job failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if err := h.saveGPUJobLog(gpuJobView{
+		UnitName:    gpuTranscodeUnitName(rawPath),
+		RawPath:     rawPath,
+		Description: "streamctl GPU transcode " + rawPath,
+		ActiveState: "queued",
+	}); err != nil {
+		log.Printf("saving requeued GPU job %s failed: %v", rawPath, err)
+	}
+	go h.dispatchGPUQueueOnce(context.Background())
+
+	q := url.Values{}
+	q.Set("requeued", rawPath)
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
 }
 
@@ -1297,14 +1332,14 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 		queuedByRawPath[item.RawPath] = item
 	}
 	for i := range files {
-		if job, ok := activeByRawPath[files[i].RawPath]; ok {
-			files[i].ProcessingUnit = job.UnitName
-			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
-			continue
-		}
 		if item, ok := queuedByRawPath[files[i].RawPath]; ok {
 			files[i].ProcessingUnit = firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath))
 			files[i].ProcessingState = item.Status
+			continue
+		}
+		if job, ok := activeByRawPath[files[i].RawPath]; ok {
+			files[i].ProcessingUnit = job.UnitName
+			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
 		}
 	}
 }

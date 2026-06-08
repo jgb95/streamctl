@@ -8,6 +8,7 @@
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
 {{if .Started}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Started GPU processing for {{.Started}}{{if .Job}} as <code>{{.Job}}</code>{{end}}</div>{{end}}
 {{if .Queued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Queued {{.Queued}} file{{if ne .Queued "1"}}s{{end}} for GPU processing.</div>{{end}}
+{{if .Requeued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Requeued <code>{{.Requeued}}</code>.</div>{{end}}
 
 <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
 	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -150,7 +151,7 @@
 				{{if .Processed}}
 				<span class="badge badge-active">processed</span>
 				{{else if .ProcessingUnit}}
-				<span class="badge badge-active">{{if .ProcessingState}}{{.ProcessingState}}{{else}}processing{{end}}</span>
+				<span class="badge {{if eq .ProcessingState "queued"}}badge-queued{{else}}badge-active{{end}}">{{if .ProcessingState}}{{.ProcessingState}}{{else}}processing{{end}}</span>
 				{{else}}
 				<span class="badge badge-failed">missing</span>
 				{{end}}
@@ -160,6 +161,12 @@
 				<span class="muted">Ready</span>
 				{{else if .ProcessingUnit}}
 				<a class="btn" href="/gpu-worker/logs/{{.ProcessingUnit}}">Logs</a>
+				{{if eq .ProcessingState "running"}}
+				<form method="post" action="/livestream-files/requeue" style="background: none; border: none; padding: 0; margin-top: 8px;" onsubmit="return confirm('Requeue this running job?');">
+					<input type="hidden" name="path" value="{{.RawPath}}">
+					<button type="submit" class="btn">Requeue</button>
+				</form>
+				{{end}}
 				{{else if and $.GPUConfigured (or (not $.GPUWorker.Managed) (eq $.GPUWorker.Status "active"))}}
 				<form method="post" action="/livestream-files/process" style="background: none; border: none; padding: 0;">
 					<input type="hidden" name="path" value="{{.RawPath}}">

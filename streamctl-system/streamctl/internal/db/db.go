@@ -725,6 +725,25 @@ func (db *DB) MarkGPUQueueRunning(id int64, unitName string) error {
 	return err
 }
 
+func (db *DB) RequeueRunningGPUJob(rawPath string) error {
+	result, err := db.Exec(`
+		UPDATE gpu_job_queue
+		SET status = 'queued', unit_name = '', started_at = NULL, finished_at = NULL
+		WHERE raw_path = ? AND status = 'running'
+	`, rawPath)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (db *DB) MarkGPUQueueFinished(rawPath, status string) error {
 	if status == "" {
 		status = "finished"
