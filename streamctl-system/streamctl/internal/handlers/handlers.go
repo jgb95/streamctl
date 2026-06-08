@@ -828,6 +828,7 @@ type livestreamFileView struct {
 	ProcessingUnit  string
 	ProcessingState string
 	ProcessingStale bool
+	ProcessingNow   bool
 }
 
 type gpuWorkerView struct {
@@ -898,6 +899,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
 	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue)
+	nowProcessing := currentLivestreamGPUJob(gpuStatus.Jobs)
 	staleCount := countStaleLivestreamFiles(files)
 	files = unprocessedLivestreamFiles(files)
 	gpuAvailability := h.gpuAvailability(r.Context())
@@ -914,6 +916,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"Requeued":        r.URL.Query().Get("requeued"),
 		"RequeuedStale":   r.URL.Query().Get("requeued_stale"),
 		"StaleCount":      staleCount,
+		"NowProcessing":   nowProcessing,
 		"Error":           r.URL.Query().Get("err"),
 	})
 }
@@ -1411,6 +1414,8 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 				files[i].ProcessingStale = !activeRawPaths[item.RawPath] && !activeUnits[item.UnitName]
 				if files[i].ProcessingStale {
 					files[i].ProcessingState = "stale"
+				} else {
+					files[i].ProcessingNow = true
 				}
 			}
 			continue
@@ -1418,6 +1423,7 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 		if job, ok := activeByRawPath[files[i].RawPath]; ok {
 			files[i].ProcessingUnit = job.UnitName
 			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
+			files[i].ProcessingNow = true
 		}
 	}
 }
@@ -1447,6 +1453,15 @@ func countStaleLivestreamFiles(files []livestreamFileView) int {
 		}
 	}
 	return count
+}
+
+func currentLivestreamGPUJob(jobs []gpuJobView) gpuJobView {
+	for _, job := range jobs {
+		if isBlockingGPUJob(job) && strings.TrimSpace(job.RawPath) != "" {
+			return job
+		}
+	}
+	return gpuJobView{}
 }
 
 func unprocessedLivestreamFiles(files []livestreamFileView) []livestreamFileView {

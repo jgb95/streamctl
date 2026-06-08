@@ -130,6 +130,13 @@
 </form>
 {{end}}
 </div>
+{{if .NowProcessing.RawPath}}
+<div class="processing-now">
+	<span class="badge badge-now">processing now</span>
+	<code>{{.NowProcessing.RawPath}}</code>
+	<a class="btn" href="/gpu-worker/logs/{{.NowProcessing.UnitName}}">Logs</a>
+</div>
+{{end}}
 <div class="table-wrap">
 <table class="livestream-table">
 	<thead>
@@ -144,7 +151,7 @@
 	</thead>
 	<tbody>
 		{{range .Files}}
-		<tr>
+		<tr {{if .ProcessingNow}}class="row-now"{{end}}>
 			<td>
 				{{if .ProcessingUnit}}
 				<input type="checkbox" disabled aria-label="Already queued">
@@ -159,7 +166,7 @@
 				{{if .Processed}}
 				<span class="badge badge-active">processed</span>
 				{{else if .ProcessingUnit}}
-				<span class="badge {{if eq .ProcessingState "queued"}}badge-queued{{else if .ProcessingStale}}badge-stale{{else}}badge-active{{end}}">{{if .ProcessingState}}{{.ProcessingState}}{{else}}processing{{end}}</span>
+				<span class="badge {{if .ProcessingNow}}badge-now{{else if eq .ProcessingState "queued"}}badge-queued{{else if .ProcessingStale}}badge-stale{{else}}badge-active{{end}}">{{if .ProcessingNow}}processing now{{else if .ProcessingState}}{{.ProcessingState}}{{else}}processing{{end}}</span>
 				{{else}}
 				<span class="badge badge-failed">missing</span>
 				{{end}}
