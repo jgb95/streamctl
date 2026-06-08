@@ -898,8 +898,8 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
-	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue)
 	nowProcessing := currentLivestreamGPUJob(gpuStatus.Jobs)
+	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
 	staleCount := countStaleLivestreamFiles(files)
 	files = unprocessedLivestreamFiles(files)
 	gpuAvailability := h.gpuAvailability(r.Context())
@@ -1275,6 +1275,9 @@ func (h *Handler) gpuFileJob(ctx context.Context, host, unit string, includeJour
 	metaCmd := strings.Join([]string{
 		"jobdir=" + shellQuote(jobdir),
 		"[ -d \"$jobdir\" ] || exit 1",
+		"active=$(tr '\\n' ' ' < \"$jobdir/active\" 2>/dev/null || true)",
+		"pid=$(tr -d '[:space:]' < \"$jobdir/pid\" 2>/dev/null || true)",
+		"if [ \"$active\" = running ] && { [ -z \"$pid\" ] || ! kill -0 \"$pid\" 2>/dev/null; }; then printf 'failed\\n' > \"$jobdir/active\"; printf 'failed\\n' > \"$jobdir/sub\"; printf 'exit-code\\n' > \"$jobdir/result\"; fi",
 		"for f in description raw_path active sub result since; do printf '%s=' \"$f\"; tr '\\n' ' ' < \"$jobdir/$f\" 2>/dev/null || true; printf '\\n'; done",
 	}, "; ")
 	meta, err := remoteSSH(ctx, host, metaCmd)
@@ -1390,7 +1393,7 @@ func isBlockingGPUJob(job gpuJobView) bool {
 	return !isTerminalGPUJob(job)
 }
 
-func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem) {
+func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem, nowProcessing gpuJobView) {
 	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
 	activeByRawPath := map[string]gpuJobView{}
 	for _, job := range jobs {
@@ -1414,7 +1417,7 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 				files[i].ProcessingStale = !activeRawPaths[item.RawPath] && !activeUnits[item.UnitName]
 				if files[i].ProcessingStale {
 					files[i].ProcessingState = "stale"
-				} else {
+				} else if isSameGPUJob(item.RawPath, item.UnitName, nowProcessing) {
 					files[i].ProcessingNow = true
 				}
 			}
@@ -1423,9 +1426,19 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 		if job, ok := activeByRawPath[files[i].RawPath]; ok {
 			files[i].ProcessingUnit = job.UnitName
 			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
-			files[i].ProcessingNow = true
+			files[i].ProcessingNow = isSameGPUJob(files[i].RawPath, job.UnitName, nowProcessing)
 		}
 	}
+}
+
+func isSameGPUJob(rawPath, unitName string, job gpuJobView) bool {
+	if strings.TrimSpace(job.RawPath) != "" && job.RawPath == rawPath {
+		return true
+	}
+	if strings.TrimSpace(job.UnitName) != "" && job.UnitName == unitName {
+		return true
+	}
+	return false
 }
 
 func activeGPUJobIndexes(jobs []gpuJobView) (map[string]bool, map[string]bool) {
