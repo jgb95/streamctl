@@ -102,6 +102,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
 	mux.Handle("/livestream-files/process-selected", h.auth(http.HandlerFunc(h.livestreamFilesProcessSelected)))
 	mux.Handle("/livestream-files/requeue", h.auth(http.HandlerFunc(h.livestreamFileRequeue)))
+	mux.Handle("/livestream-files/requeue-stale", h.auth(http.HandlerFunc(h.livestreamFilesRequeueStale)))
 	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
@@ -826,6 +827,7 @@ type livestreamFileView struct {
 	Processed       bool
 	ProcessingUnit  string
 	ProcessingState string
+	ProcessingStale bool
 }
 
 type gpuWorkerView struct {
@@ -896,6 +898,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
 	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue)
+	staleCount := countStaleLivestreamFiles(files)
 	files = unprocessedLivestreamFiles(files)
 	gpuAvailability := h.gpuAvailability(r.Context())
 	h.render(w, "livestream_files.html", map[string]any{
@@ -909,6 +912,8 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"Job":             r.URL.Query().Get("job"),
 		"Queued":          r.URL.Query().Get("queued"),
 		"Requeued":        r.URL.Query().Get("requeued"),
+		"RequeuedStale":   r.URL.Query().Get("requeued_stale"),
+		"StaleCount":      staleCount,
 		"Error":           r.URL.Query().Get("err"),
 	})
 }
@@ -1023,6 +1028,45 @@ func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) 
 
 	q := url.Values{}
 	q.Set("requeued", rawPath)
+	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+}
+
+func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Request) {
+	worker := h.gpuWorkerView(r.Context())
+	gpuStatus := h.gpuStatus(r.Context(), worker)
+	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("listing GPU queue failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	activeRawPaths, activeUnits := activeGPUJobIndexes(gpuStatus.Jobs)
+	requeued := 0
+	for _, item := range openQueue {
+		if item.Status != "running" {
+			continue
+		}
+		if activeRawPaths[item.RawPath] || activeUnits[item.UnitName] {
+			continue
+		}
+		if err := h.DB.RequeueRunningGPUJob(item.RawPath); err != nil {
+			log.Printf("requeueing stale GPU job %s failed: %v", item.RawPath, err)
+			continue
+		}
+		if err := h.saveGPUJobLog(gpuJobView{
+			UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath)),
+			RawPath:     item.RawPath,
+			Description: "streamctl GPU transcode " + item.RawPath,
+			ActiveState: "queued",
+		}); err != nil {
+			log.Printf("saving requeued stale GPU job %s failed: %v", item.RawPath, err)
+		}
+		requeued++
+	}
+	if requeued > 0 {
+		go h.dispatchGPUQueueOnce(context.Background())
+	}
+	q := url.Values{}
+	q.Set("requeued_stale", strconv.Itoa(requeued))
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
 }
 
@@ -1344,6 +1388,7 @@ func isBlockingGPUJob(job gpuJobView) bool {
 }
 
 func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem) {
+	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
 	activeByRawPath := map[string]gpuJobView{}
 	for _, job := range jobs {
 		if strings.TrimSpace(job.RawPath) == "" || isTerminalGPUJob(job) {
@@ -1362,6 +1407,12 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 		if item, ok := queuedByRawPath[files[i].RawPath]; ok {
 			files[i].ProcessingUnit = firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath))
 			files[i].ProcessingState = item.Status
+			if item.Status == "running" {
+				files[i].ProcessingStale = !activeRawPaths[item.RawPath] && !activeUnits[item.UnitName]
+				if files[i].ProcessingStale {
+					files[i].ProcessingState = "stale"
+				}
+			}
 			continue
 		}
 		if job, ok := activeByRawPath[files[i].RawPath]; ok {
@@ -1369,6 +1420,33 @@ func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView
 			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
 		}
 	}
+}
+
+func activeGPUJobIndexes(jobs []gpuJobView) (map[string]bool, map[string]bool) {
+	rawPaths := map[string]bool{}
+	units := map[string]bool{}
+	for _, job := range jobs {
+		if isTerminalGPUJob(job) {
+			continue
+		}
+		if strings.TrimSpace(job.RawPath) != "" {
+			rawPaths[job.RawPath] = true
+		}
+		if strings.TrimSpace(job.UnitName) != "" {
+			units[job.UnitName] = true
+		}
+	}
+	return rawPaths, units
+}
+
+func countStaleLivestreamFiles(files []livestreamFileView) int {
+	count := 0
+	for _, file := range files {
+		if file.ProcessingStale {
+			count++
+		}
+	}
+	return count
 }
 
 func unprocessedLivestreamFiles(files []livestreamFileView) []livestreamFileView {

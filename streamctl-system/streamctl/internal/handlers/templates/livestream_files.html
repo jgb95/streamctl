@@ -9,6 +9,7 @@
 {{if .Started}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Started GPU processing for {{.Started}}{{if .Job}} as <code>{{.Job}}</code>{{end}}</div>{{end}}
 {{if .Queued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Queued {{.Queued}} file{{if ne .Queued "1"}}s{{end}} for GPU processing.</div>{{end}}
 {{if .Requeued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Requeued <code>{{.Requeued}}</code>.</div>{{end}}
+{{if .RequeuedStale}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Requeued {{.RequeuedStale}} stale job{{if ne .RequeuedStale "1"}}s{{end}}.</div>{{end}}
 
 <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
 	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -119,9 +120,16 @@
 </div>
 
 {{if .Files}}
-<form id="queue-selected-form" method="post" action="/livestream-files/process-selected" style="background: none; border: none; padding: 0; margin: 0 0 10px 0;">
+<div style="display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px 0;">
+<form id="queue-selected-form" method="post" action="/livestream-files/process-selected" style="background: none; border: none; padding: 0; margin: 0;">
 	<button type="submit" class="btn btn-primary">Queue checked</button>
 </form>
+{{if .StaleCount}}
+<form method="post" action="/livestream-files/requeue-stale" style="background: none; border: none; padding: 0; margin: 0;" onsubmit="return confirm('Requeue all stale running jobs?');">
+	<button type="submit" class="btn">Requeue stale</button>
+</form>
+{{end}}
+</div>
 <div class="table-wrap">
 <table class="livestream-table">
 	<thead>
@@ -151,7 +159,7 @@
 				{{if .Processed}}
 				<span class="badge badge-active">processed</span>
 				{{else if .ProcessingUnit}}
-				<span class="badge {{if eq .ProcessingState "queued"}}badge-queued{{else}}badge-active{{end}}">{{if .ProcessingState}}{{.ProcessingState}}{{else}}processing{{end}}</span>
+				<span class="badge {{if eq .ProcessingState "queued"}}badge-queued{{else if .ProcessingStale}}badge-stale{{else}}badge-active{{end}}">{{if .ProcessingState}}{{.ProcessingState}}{{else}}processing{{end}}</span>
 				{{else}}
 				<span class="badge badge-failed">missing</span>
 				{{end}}
@@ -160,8 +168,12 @@
 				{{if .Processed}}
 				<span class="muted">Ready</span>
 				{{else if .ProcessingUnit}}
+				{{if .ProcessingStale}}
+				<span class="muted">Worker gone</span>
+				{{else}}
 				<a class="btn" href="/gpu-worker/logs/{{.ProcessingUnit}}">Logs</a>
-				{{if eq .ProcessingState "running"}}
+				{{end}}
+				{{if or (eq .ProcessingState "running") .ProcessingStale}}
 				<form method="post" action="/livestream-files/requeue" style="background: none; border: none; padding: 0; margin-top: 8px;" onsubmit="return confirm('Requeue this running job?');">
 					<input type="hidden" name="path" value="{{.RawPath}}">
 					<button type="submit" class="btn">Requeue</button>
