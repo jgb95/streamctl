@@ -837,6 +837,7 @@ type gpuWorkerView struct {
 	ID         int64
 	Name       string
 	Status     string
+	RawStatus  string
 	IP         string
 	SSHHost    string
 	Error      string
@@ -898,26 +899,31 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
+	openQueue = h.reconcileStaleGPUQueue(worker, gpuStatus.Jobs, openQueue)
 	nowProcessing := currentLivestreamGPUJob(gpuStatus.Jobs)
 	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
 	staleCount := countStaleLivestreamFiles(files)
+	queuedCount, runningCount := countGPUQueueStates(openQueue)
 	files = unprocessedLivestreamFiles(files)
 	gpuAvailability := h.gpuAvailability(r.Context())
 	h.render(w, "livestream_files.html", map[string]any{
-		"Files":           files,
-		"GPUConfigured":   worker.Configured,
-		"GPUWorkerHost":   h.GPUWorkerHost,
-		"GPUWorker":       worker,
-		"GPUStatus":       gpuStatus,
-		"GPUAvailability": gpuAvailability,
-		"Started":         r.URL.Query().Get("started"),
-		"Job":             r.URL.Query().Get("job"),
-		"Queued":          r.URL.Query().Get("queued"),
-		"Requeued":        r.URL.Query().Get("requeued"),
-		"RequeuedStale":   r.URL.Query().Get("requeued_stale"),
-		"StaleCount":      staleCount,
-		"NowProcessing":   nowProcessing,
-		"Error":           r.URL.Query().Get("err"),
+		"Files":            files,
+		"GPUConfigured":    worker.Configured,
+		"GPUWorkerHost":    h.GPUWorkerHost,
+		"GPUWorker":        worker,
+		"GPUStatus":        gpuStatus,
+		"GPUAvailability":  gpuAvailability,
+		"Started":          r.URL.Query().Get("started"),
+		"Job":              r.URL.Query().Get("job"),
+		"Queued":           r.URL.Query().Get("queued"),
+		"Requeued":         r.URL.Query().Get("requeued"),
+		"RequeuedStale":    r.URL.Query().Get("requeued_stale"),
+		"StaleCount":       staleCount,
+		"QueuedCount":      queuedCount,
+		"RunningCount":     runningCount,
+		"QueueNeedsWorker": queuedCount > 0 && worker.Managed && worker.Status != "active",
+		"NowProcessing":    nowProcessing,
+		"Error":            r.URL.Query().Get("err"),
 	})
 }
 
@@ -1468,6 +1474,20 @@ func countStaleLivestreamFiles(files []livestreamFileView) int {
 	return count
 }
 
+func countGPUQueueStates(items []db.GPUJobQueueItem) (int, int) {
+	queued := 0
+	running := 0
+	for _, item := range items {
+		switch item.Status {
+		case "queued":
+			queued++
+		case "running":
+			running++
+		}
+	}
+	return queued, running
+}
+
 func currentLivestreamGPUJob(jobs []gpuJobView) gpuJobView {
 	for _, job := range jobs {
 		if isBlockingGPUJob(job) && strings.TrimSpace(job.RawPath) != "" {
@@ -1475,6 +1495,42 @@ func currentLivestreamGPUJob(jobs []gpuJobView) gpuJobView {
 		}
 	}
 	return gpuJobView{}
+}
+
+func (h *Handler) reconcileStaleGPUQueue(worker gpuWorkerView, jobs []gpuJobView, queue []db.GPUJobQueueItem) []db.GPUJobQueueItem {
+	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
+	changed := false
+	for _, item := range queue {
+		if item.Status != "running" {
+			continue
+		}
+		if worker.Status == "active" && (activeRawPaths[item.RawPath] || activeUnits[item.UnitName]) {
+			continue
+		}
+		if err := h.DB.RequeueRunningGPUJob(item.RawPath); err != nil {
+			log.Printf("requeueing stale GPU job %s failed: %v", item.RawPath, err)
+			continue
+		}
+		if err := h.saveGPUJobLog(gpuJobView{
+			UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath)),
+			RawPath:     item.RawPath,
+			Description: "streamctl GPU transcode " + item.RawPath,
+			ActiveState: "queued",
+		}); err != nil {
+			log.Printf("saving stale GPU requeue log %s failed: %v", item.RawPath, err)
+		}
+		log.Printf("requeued stale GPU job %s worker_status=%q", item.RawPath, worker.Status)
+		changed = true
+	}
+	if !changed {
+		return queue
+	}
+	refreshed, err := h.DB.ListOpenGPUQueueItems(1000)
+	if err != nil {
+		log.Printf("refreshing GPU queue after stale reconciliation failed: %v", err)
+		return queue
+	}
+	return refreshed
 }
 
 func unprocessedLivestreamFiles(files []livestreamFileView) []livestreamFileView {
@@ -1506,6 +1562,11 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	}
 	worker := h.gpuWorkerView(ctx)
 	if worker.Managed && worker.Status != "active" {
+		if openQueue, err := h.DB.ListOpenGPUQueueItems(1000); err != nil {
+			log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
+		} else {
+			h.reconcileStaleGPUQueue(worker, nil, openQueue)
+		}
 		log.Printf("GPU queue dispatch skipped: worker status=%q error=%q", worker.Status, worker.Error)
 		return
 	}
@@ -1520,6 +1581,12 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	status := h.gpuStatus(ctx, worker)
 	if status.Error != "" {
 		log.Printf("GPU queue status warning: %s", status.Error)
+	}
+	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
+	if err != nil {
+		log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
+	} else {
+		h.reconcileStaleGPUQueue(worker, status.Jobs, openQueue)
 	}
 	for _, job := range status.Jobs {
 		if isBlockingGPUJob(job) {
@@ -1824,7 +1891,7 @@ func (h *Handler) gpuWorkerSSHHost(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%s", worker.Error)
 	}
 	if worker.IP == "" || worker.Status != "active" {
-		return "", fmt.Errorf("managed GPU worker is not active")
+		return "", fmt.Errorf("managed GPU worker is not active: %s", firstNonEmptyString(worker.Status, "unknown"))
 	}
 	return worker.SSHHost, nil
 }
@@ -1843,26 +1910,30 @@ func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
 	}
 	client, err := h.doClient()
 	if err != nil {
+		view.Status = "api error"
 		view.Error = err.Error()
 		return view
 	}
 	droplets, err := client.ListDropletsByTag(ctx, h.gpuWorkerTag())
 	if err != nil {
+		view.Status = "api error"
 		view.Error = err.Error()
 		return view
 	}
 	if len(droplets) == 0 {
+		view.Status = "not found"
 		return view
 	}
 	d := droplets[0]
 	view.ID = d.ID
 	view.Name = d.Name
+	view.RawStatus = d.Status
 	view.Status = d.Status
 	view.IP = d.PublicIPv4()
 	if view.IP != "" {
 		view.SSHHost = firstNonEmptyString(h.GPUWorkerUser, "root") + "@" + view.IP
 	}
-	return view
+	return h.withManagedWorkerSSHReadiness(ctx, view)
 }
 
 func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
@@ -2028,11 +2099,13 @@ func (h *Handler) validateGPUSizeRegion(ctx context.Context, client *doclient.Cl
 func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuWorkerView {
 	client, err := h.runpodClient()
 	if err != nil {
+		view.Status = "api error"
 		view.Error = err.Error()
 		return view
 	}
 	pods, err := client.ListPods(ctx)
 	if err != nil {
+		view.Status = "api error"
 		view.Error = err.Error()
 		return view
 	}
@@ -2042,14 +2115,34 @@ func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuW
 		}
 		view.ID = 1
 		view.Name = pod.Name
-		view.Status = pod.Status()
+		view.RawStatus = pod.Status()
+		view.Status = view.RawStatus
 		view.SSHHost = pod.SSHHost(firstNonEmptyString(h.GPUWorkerUser, "root"))
 		if view.SSHHost != "" {
 			view.SSHHost = appendSSHIdentity(view.SSHHost, gpuWorkerSSHKeyPath)
 		}
 		ip, _ := pod.SSHAddress()
 		view.IP = ip
+		return h.withManagedWorkerSSHReadiness(ctx, view)
+	}
+	view.Status = "not found"
+	return view
+}
+
+func (h *Handler) withManagedWorkerSSHReadiness(ctx context.Context, view gpuWorkerView) gpuWorkerView {
+	if view.Status != "active" {
 		return view
+	}
+	if strings.TrimSpace(view.SSHHost) == "" {
+		view.Status = "starting"
+		return view
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	out, err := remoteSSH(probeCtx, view.SSHHost, "true")
+	if err != nil {
+		view.Status = "starting"
+		view.Error = fmt.Sprintf("SSH not ready: %v: %s", err, strings.TrimSpace(out))
 	}
 	return view
 }

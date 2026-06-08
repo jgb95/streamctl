@@ -48,8 +48,18 @@
 			<span class="badge badge-inactive">not configured</span>
 		{{end}}
 	</div>
-	{{if .GPUWorker.Error}}<div class="inline-error">{{.GPUWorker.Error}}</div>{{end}}
+{{if .GPUWorker.Error}}<div class="inline-error">{{.GPUWorker.Error}}</div>{{end}}
 	{{if not .GPUConfigured}}<div class="hint">Files can be inspected, but processing buttons are disabled until a GPU worker is configured.</div>{{end}}
+	{{if .QueueNeedsWorker}}
+	<div class="inline-error" style="border-color: var(--accent); color: var(--accent); background: rgba(110,168,254,0.08);">
+		{{.QueuedCount}} queued job{{if ne .QueuedCount 1}}s{{end}} waiting for a GPU worker. Current worker state: <code>{{.GPUWorker.Status}}</code>.
+		{{if not .GPUWorker.ID}}
+		<form method="post" action="/gpu-worker/create" style="display: inline; background: none; border: none; padding: 0; margin-left: 8px;">
+			<button type="submit" class="btn btn-primary">Create GPU</button>
+		</form>
+		{{end}}
+	</div>
+	{{end}}
 	{{if .GPUAvailability.Error}}<div class="inline-error">{{.GPUAvailability.Error}}</div>{{end}}
 	{{if .GPUAvailability.Sizes}}
 	<details style="margin-top: 12px;">
