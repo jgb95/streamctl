@@ -52,7 +52,7 @@
 	{{if not .GPUConfigured}}<div class="hint">Files can be inspected, but processing buttons are disabled until a GPU worker is configured.</div>{{end}}
 	{{if .QueueNeedsWorker}}
 	<div class="inline-error" style="border-color: var(--accent); color: var(--accent); background: rgba(110,168,254,0.08);">
-		{{.QueuedCount}} queued job{{if ne .QueuedCount 1}}s{{end}} waiting for a GPU worker. Current worker state: <code>{{.GPUWorker.Status}}</code>.
+		{{.QueuedCount}} queued job{{if ne .QueuedCount 1}}s{{end}} waiting for a GPU worker. Current worker state: <code>{{.GPUWorker.Status}}</code>. The queue will continue once the worker is active.
 		{{if not .GPUWorker.ID}}
 		<form method="post" action="/gpu-worker/create" style="display: inline; background: none; border: none; padding: 0; margin-left: 8px;">
 			<button type="submit" class="btn btn-primary">Create GPU</button>

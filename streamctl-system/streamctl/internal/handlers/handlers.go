@@ -1562,10 +1562,19 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	}
 	worker := h.gpuWorkerView(ctx)
 	if worker.Managed && worker.Status != "active" {
+		queuedCount := 0
 		if openQueue, err := h.DB.ListOpenGPUQueueItems(1000); err != nil {
 			log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
 		} else {
-			h.reconcileStaleGPUQueue(worker, nil, openQueue)
+			openQueue = h.reconcileStaleGPUQueue(worker, nil, openQueue)
+			queuedCount, _ = countGPUQueueStates(openQueue)
+		}
+		if queuedCount > 0 && h.hasRunPodToken() && worker.Status == "not found" {
+			if err := h.ensureRunPodWorker(ctx, h.RunPodGPUType); err != nil {
+				log.Printf("creating RunPod worker for queued GPU jobs failed: %v", err)
+			} else {
+				log.Printf("creating RunPod worker for %d queued GPU job(s)", queuedCount)
+			}
 		}
 		log.Printf("GPU queue dispatch skipped: worker status=%q error=%q", worker.Status, worker.Error)
 		return
@@ -2148,38 +2157,42 @@ func (h *Handler) withManagedWorkerSSHReadiness(ctx context.Context, view gpuWor
 }
 
 func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
-	client, err := h.runpodClient()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	pods, err := client.ListPods(r.Context())
-	if err != nil {
+	gpuType := firstNonEmptyString(r.FormValue("size"), h.RunPodGPUType, "NVIDIA L40S")
+	if err := h.ensureRunPodWorker(r.Context(), gpuType); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+}
+
+func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error {
+	client, err := h.runpodClient()
+	if err != nil {
+		return err
+	}
+	pods, err := client.ListPods(ctx)
+	if err != nil {
+		return err
+	}
 	for _, pod := range pods {
 		if pod.Name == h.runpodPodName() {
-			http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
-			return
+			return nil
 		}
 	}
 	sshPublicKey, err := ensureGPUWorkerSSHPublicKey(gpuWorkerSSHKeyPath)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("reading SSH public key for RunPod: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("reading SSH public key for RunPod: %v", err)
 	}
 	env, err := h.runpodWorkerEnv(sshPublicKey)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return err
 	}
-	gpuType := firstNonEmptyString(r.FormValue("size"), h.RunPodGPUType, "NVIDIA L40S")
-	if _, err := client.CreatePod(r.Context(), runpodclient.CreatePodRequest{
+	gpuType = firstNonEmptyString(gpuType, h.RunPodGPUType, "NVIDIA L40S")
+	if _, err := client.CreatePod(ctx, runpodclient.CreatePodRequest{
 		Name:              h.runpodPodName(),
 		ImageName:         firstNonEmptyString(h.RunPodImage, "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"),
 		GPUTypeIDs:        []string{gpuType},
@@ -2202,10 +2215,9 @@ func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
 			"exec /usr/sbin/sshd -D -e",
 		}, " && ")},
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+		return err
 	}
-	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+	return nil
 }
 
 func (h *Handler) runpodWorkerDestroy(w http.ResponseWriter, r *http.Request) {
