@@ -883,6 +883,33 @@ type gpuAvailabilityView struct {
 	Error           string
 }
 
+type gpuQueueItemView struct {
+	ID            int64
+	RawPath       string
+	UnitName      string
+	Status        string
+	AttemptCount  int
+	LastAttemptAt string
+	LastError     string
+	CreatedAt     string
+	StartedAt     string
+	FinishedAt    string
+	ProcessingNow bool
+	Stale         bool
+}
+
+type gpuQueueDashboardView struct {
+	Queued       int
+	Running      int
+	Failed       int
+	Finished     int
+	Cancelled    int
+	Items        []gpuQueueItemView
+	HasOpenJobs  bool
+	HasStaleJobs bool
+	LastError    string
+}
+
 func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(h.Remote) == "" {
 		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
@@ -901,6 +928,10 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	openQueue = h.reconcileStaleGPUQueue(worker, gpuStatus.Jobs, openQueue)
 	nowProcessing := currentLivestreamGPUJob(gpuStatus.Jobs)
+	queueDashboard, err := h.gpuQueueDashboard(gpuStatus.Jobs, nowProcessing)
+	if err != nil {
+		log.Printf("loading GPU queue dashboard failed: %v", err)
+	}
 	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
 	staleCount := countStaleLivestreamFiles(files)
 	queuedCount, runningCount := countGPUQueueStates(openQueue)
@@ -912,6 +943,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"GPUWorkerHost":    h.GPUWorkerHost,
 		"GPUWorker":        worker,
 		"GPUStatus":        gpuStatus,
+		"GPUQueue":         queueDashboard,
 		"GPUAvailability":  gpuAvailability,
 		"Started":          r.URL.Query().Get("started"),
 		"Job":              r.URL.Query().Get("job"),
@@ -1017,7 +1049,7 @@ func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.DB.RequeueRunningGPUJob(rawPath); err != nil {
+	if err := h.DB.RequeueRunningGPUJob(rawPath, "manually requeued from livestream files page"); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "job is not currently running", http.StatusBadRequest)
 			return
@@ -1057,7 +1089,7 @@ func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Req
 		if activeRawPaths[item.RawPath] || activeUnits[item.UnitName] {
 			continue
 		}
-		if err := h.DB.RequeueRunningGPUJob(item.RawPath); err != nil {
+		if err := h.DB.RequeueRunningGPUJob(item.RawPath, "requeued stale job because no active worker job matched it"); err != nil {
 			log.Printf("requeueing stale GPU job %s failed: %v", item.RawPath, err)
 			continue
 		}
@@ -1488,6 +1520,59 @@ func countGPUQueueStates(items []db.GPUJobQueueItem) (int, int) {
 	return queued, running
 }
 
+func (h *Handler) gpuQueueDashboard(jobs []gpuJobView, nowProcessing gpuJobView) (gpuQueueDashboardView, error) {
+	counts, err := h.DB.GPUQueueStatusCounts()
+	if err != nil {
+		return gpuQueueDashboardView{}, err
+	}
+	items, err := h.DB.ListRecentGPUQueueItems(30)
+	if err != nil {
+		return gpuQueueDashboardView{}, err
+	}
+	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
+	dashboard := gpuQueueDashboardView{
+		Queued:    counts["queued"],
+		Running:   counts["running"],
+		Failed:    counts["failed"],
+		Finished:  counts["finished"],
+		Cancelled: counts["cancelled"],
+	}
+	dashboard.HasOpenJobs = dashboard.Queued > 0 || dashboard.Running > 0
+	for _, item := range items {
+		row := gpuQueueItemView{
+			ID:            item.ID,
+			RawPath:       item.RawPath,
+			UnitName:      firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath)),
+			Status:        item.Status,
+			AttemptCount:  item.AttemptCount,
+			LastAttemptAt: formatOptionalTime(item.LastAttemptAt),
+			LastError:     item.LastError,
+			CreatedAt:     item.CreatedAt.Format("2006-01-02 15:04"),
+			StartedAt:     formatOptionalTime(item.StartedAt),
+			FinishedAt:    formatOptionalTime(item.FinishedAt),
+			ProcessingNow: item.Status == "running" && isSameGPUJob(item.RawPath, item.UnitName, nowProcessing),
+		}
+		if item.Status == "running" {
+			row.Stale = !activeRawPaths[item.RawPath] && !activeUnits[item.UnitName]
+			if row.Stale {
+				dashboard.HasStaleJobs = true
+			}
+		}
+		if strings.TrimSpace(row.LastError) != "" && dashboard.LastError == "" {
+			dashboard.LastError = row.LastError
+		}
+		dashboard.Items = append(dashboard.Items, row)
+	}
+	return dashboard, nil
+}
+
+func formatOptionalTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
 func currentLivestreamGPUJob(jobs []gpuJobView) gpuJobView {
 	for _, job := range jobs {
 		if isBlockingGPUJob(job) && strings.TrimSpace(job.RawPath) != "" {
@@ -1507,7 +1592,7 @@ func (h *Handler) reconcileStaleGPUQueue(worker gpuWorkerView, jobs []gpuJobView
 		if worker.Status == "active" && (activeRawPaths[item.RawPath] || activeUnits[item.UnitName]) {
 			continue
 		}
-		if err := h.DB.RequeueRunningGPUJob(item.RawPath); err != nil {
+		if err := h.DB.RequeueRunningGPUJob(item.RawPath, fmt.Sprintf("requeued stale job because worker status was %q", worker.Status)); err != nil {
 			log.Printf("requeueing stale GPU job %s failed: %v", item.RawPath, err)
 			continue
 		}
@@ -1620,8 +1705,9 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	command := strings.TrimSpace(h.GPUWorkerCommand)
 	unitName, out, err := startRemoteGPUTranscode(ctx, host, command, item.RawPath)
 	if err != nil {
-		log.Printf("GPU transcode submit queued %s failed: %v: %s", item.RawPath, err, strings.TrimSpace(out))
-		if err := h.DB.MarkGPUQueueFinished(item.RawPath, "failed"); err != nil {
+		errText := strings.TrimSpace(fmt.Sprintf("%v: %s", err, strings.TrimSpace(out)))
+		log.Printf("GPU transcode submit queued %s failed: %s", item.RawPath, errText)
+		if err := h.DB.MarkGPUQueueFinished(item.RawPath, "failed", errText); err != nil {
 			log.Printf("marking queued GPU job %s failed: %v", item.RawPath, err)
 		}
 		return
@@ -1648,7 +1734,11 @@ func (h *Handler) markGPUQueueTerminal(rawPath string, job gpuJobView) {
 	if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 		status = "failed"
 	}
-	if err := h.DB.MarkGPUQueueFinished(rawPath, status); err != nil {
+	lastError := ""
+	if status == "failed" {
+		lastError = firstNonEmptyString(strings.TrimSpace(job.Error), strings.TrimSpace(job.Result), strings.TrimSpace(job.ActiveState))
+	}
+	if err := h.DB.MarkGPUQueueFinished(rawPath, status, lastError); err != nil {
 		log.Printf("marking GPU queue %s %s failed: %v", rawPath, status, err)
 	}
 }

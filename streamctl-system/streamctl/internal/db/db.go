@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS gpu_job_queue (
 	raw_path TEXT NOT NULL UNIQUE,
 	unit_name TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'queued',
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	last_attempt_at DATETIME,
+	last_error TEXT NOT NULL DEFAULT '',
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	started_at DATETIME,
 	finished_at DATETIME
@@ -114,6 +117,9 @@ func (db *DB) Migrate() error {
 		return err
 	}
 	if err := db.migrateNostrStreamColumns(); err != nil {
+		return err
+	}
+	if err := db.migrateGPUQueueColumns(); err != nil {
 		return err
 	}
 	return db.seedDefaultNostrRelays()
@@ -172,6 +178,30 @@ func (db *DB) migrateNostrStreamColumns() error {
 	}
 	for _, col := range columns {
 		hasCol, err := db.hasColumn("streams", col.name)
+		if err != nil {
+			return err
+		}
+		if hasCol {
+			continue
+		}
+		if _, err := db.Exec(col.sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) migrateGPUQueueColumns() error {
+	columns := []struct {
+		name string
+		sql  string
+	}{
+		{"attempt_count", `ALTER TABLE gpu_job_queue ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0`},
+		{"last_attempt_at", `ALTER TABLE gpu_job_queue ADD COLUMN last_attempt_at DATETIME`},
+		{"last_error", `ALTER TABLE gpu_job_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, col := range columns {
+		hasCol, err := db.hasColumn("gpu_job_queue", col.name)
 		if err != nil {
 			return err
 		}
@@ -284,13 +314,16 @@ type GPUJobLog struct {
 }
 
 type GPUJobQueueItem struct {
-	ID         int64
-	RawPath    string
-	UnitName   string
-	Status     string
-	CreatedAt  time.Time
-	StartedAt  *time.Time
-	FinishedAt *time.Time
+	ID            int64
+	RawPath       string
+	UnitName      string
+	Status        string
+	AttemptCount  int
+	LastAttemptAt *time.Time
+	LastError     string
+	CreatedAt     time.Time
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
 }
 
 // ---------- Endpoint queries ----------
@@ -659,14 +692,15 @@ func (db *DB) EnqueueGPUJob(rawPath string) (*GPUJobQueueItem, error) {
 
 func (db *DB) GetGPUQueueItemByRawPath(rawPath string) (*GPUJobQueueItem, error) {
 	var item GPUJobQueueItem
-	var startedAt, finishedAt sql.NullTime
+	var lastAttemptAt, startedAt, finishedAt sql.NullTime
 	err := db.QueryRow(`
-		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
 		FROM gpu_job_queue WHERE raw_path = ?
-	`, rawPath).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt)
+	`, rawPath).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt)
 	if err != nil {
 		return nil, err
 	}
+	item.LastAttemptAt = nullTimePtr(lastAttemptAt)
 	item.StartedAt = nullTimePtr(startedAt)
 	item.FinishedAt = nullTimePtr(finishedAt)
 	return &item, nil
@@ -674,14 +708,15 @@ func (db *DB) GetGPUQueueItemByRawPath(rawPath string) (*GPUJobQueueItem, error)
 
 func (db *DB) GetGPUQueueItemByUnitName(unitName string) (*GPUJobQueueItem, error) {
 	var item GPUJobQueueItem
-	var startedAt, finishedAt sql.NullTime
+	var lastAttemptAt, startedAt, finishedAt sql.NullTime
 	err := db.QueryRow(`
-		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
 		FROM gpu_job_queue WHERE unit_name = ?
-	`, unitName).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt)
+	`, unitName).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt)
 	if err != nil {
 		return nil, err
 	}
+	item.LastAttemptAt = nullTimePtr(lastAttemptAt)
 	item.StartedAt = nullTimePtr(startedAt)
 	item.FinishedAt = nullTimePtr(finishedAt)
 	return &item, nil
@@ -689,15 +724,16 @@ func (db *DB) GetGPUQueueItemByUnitName(unitName string) (*GPUJobQueueItem, erro
 
 func (db *DB) NextQueuedGPUJob() (*GPUJobQueueItem, error) {
 	var item GPUJobQueueItem
-	var startedAt, finishedAt sql.NullTime
+	var lastAttemptAt, startedAt, finishedAt sql.NullTime
 	err := db.QueryRow(`
-		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
 		FROM gpu_job_queue WHERE status = 'queued'
 		ORDER BY created_at, id LIMIT 1
-	`).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt)
+	`).Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt)
 	if err != nil {
 		return nil, err
 	}
+	item.LastAttemptAt = nullTimePtr(lastAttemptAt)
 	item.StartedAt = nullTimePtr(startedAt)
 	item.FinishedAt = nullTimePtr(finishedAt)
 	return &item, nil
@@ -708,7 +744,7 @@ func (db *DB) ListOpenGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
 		limit = 50
 	}
 	rows, err := db.Query(`
-		SELECT id, raw_path, unit_name, status, created_at, started_at, finished_at
+		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
 		FROM gpu_job_queue
 		WHERE status IN ('queued', 'running')
 		ORDER BY created_at, id LIMIT ?
@@ -720,10 +756,11 @@ func (db *DB) ListOpenGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
 	var out []GPUJobQueueItem
 	for rows.Next() {
 		var item GPUJobQueueItem
-		var startedAt, finishedAt sql.NullTime
-		if err := rows.Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
+		var lastAttemptAt, startedAt, finishedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
 			return nil, err
 		}
+		item.LastAttemptAt = nullTimePtr(lastAttemptAt)
 		item.StartedAt = nullTimePtr(startedAt)
 		item.FinishedAt = nullTimePtr(finishedAt)
 		out = append(out, item)
@@ -731,21 +768,83 @@ func (db *DB) ListOpenGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
 	return out, rows.Err()
 }
 
+func (db *DB) ListRecentGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := db.Query(`
+		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
+		FROM gpu_job_queue
+		ORDER BY
+			CASE status
+				WHEN 'running' THEN 0
+				WHEN 'queued' THEN 1
+				WHEN 'failed' THEN 2
+				WHEN 'cancelled' THEN 3
+				ELSE 4
+			END,
+			COALESCE(last_attempt_at, started_at, finished_at, created_at) DESC,
+			id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GPUJobQueueItem
+	for rows.Next() {
+		var item GPUJobQueueItem
+		var lastAttemptAt, startedAt, finishedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
+			return nil, err
+		}
+		item.LastAttemptAt = nullTimePtr(lastAttemptAt)
+		item.StartedAt = nullTimePtr(startedAt)
+		item.FinishedAt = nullTimePtr(finishedAt)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) GPUQueueStatusCounts() (map[string]int, error) {
+	rows, err := db.Query(`SELECT status, count(*) FROM gpu_job_queue GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) MarkGPUQueueRunning(id int64, unitName string) error {
 	_, err := db.Exec(`
 		UPDATE gpu_job_queue
-		SET status = 'running', unit_name = ?, started_at = CURRENT_TIMESTAMP, finished_at = NULL
+		SET status = 'running',
+			unit_name = ?,
+			attempt_count = attempt_count + 1,
+			last_attempt_at = CURRENT_TIMESTAMP,
+			last_error = '',
+			started_at = CURRENT_TIMESTAMP,
+			finished_at = NULL
 		WHERE id = ?
 	`, unitName, id)
 	return err
 }
 
-func (db *DB) RequeueRunningGPUJob(rawPath string) error {
+func (db *DB) RequeueRunningGPUJob(rawPath, lastError string) error {
 	result, err := db.Exec(`
 		UPDATE gpu_job_queue
-		SET status = 'queued', unit_name = '', started_at = NULL, finished_at = NULL
+		SET status = 'queued', unit_name = '', last_error = ?, started_at = NULL, finished_at = NULL
 		WHERE raw_path = ? AND status = 'running'
-	`, rawPath)
+	`, lastError, rawPath)
 	if err != nil {
 		return err
 	}
@@ -759,15 +858,15 @@ func (db *DB) RequeueRunningGPUJob(rawPath string) error {
 	return nil
 }
 
-func (db *DB) MarkGPUQueueFinished(rawPath, status string) error {
+func (db *DB) MarkGPUQueueFinished(rawPath, status, lastError string) error {
 	if status == "" {
 		status = "finished"
 	}
 	_, err := db.Exec(`
 		UPDATE gpu_job_queue
-		SET status = ?, finished_at = CURRENT_TIMESTAMP
+		SET status = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP
 		WHERE raw_path = ? AND status IN ('queued', 'running')
-	`, status, rawPath)
+	`, status, lastError, rawPath)
 	return err
 }
 

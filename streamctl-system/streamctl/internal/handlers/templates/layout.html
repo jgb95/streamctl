@@ -75,6 +75,18 @@ tr:last-child td { border-bottom: none; }
 .badge-failed { background: rgba(239,107,107,0.15); color: var(--danger); }
 .processing-now { border: 1px solid rgba(110,168,254,0.45); background: rgba(110,168,254,0.09); border-radius: 6px; padding: 10px 12px; margin: 0 0 12px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .row-now td { background: rgba(110,168,254,0.05); }
+.queue-dashboard { margin-top: 12px; }
+.queue-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.queue-card { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: rgba(15,17,21,0.45); }
+.queue-card span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.queue-card strong { display: block; margin-top: 4px; font-size: 22px; line-height: 1.1; }
+.queue-table { table-layout: fixed; }
+.queue-table th:nth-child(1), .queue-table td:nth-child(1) { width: 128px; }
+.queue-table th:nth-child(3), .queue-table td:nth-child(3) { width: 90px; }
+.queue-table th:nth-child(4), .queue-table td:nth-child(4) { width: 150px; }
+.queue-table th:nth-child(6), .queue-table td:nth-child(6) { width: 120px; }
+.queue-table td { vertical-align: top; }
+.queue-table code { display: block; max-width: 100%; white-space: normal; }
 form { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 20px; }
 .field { margin-bottom: 16px; }
 .field label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
@@ -118,6 +130,10 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 .browser-row:last-child { border-bottom: 0; }
 .browser-kind { width: 42px; color: var(--muted); font-size: 11px; text-transform: uppercase; }
 .browser-name { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+	.queue-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.queue-table { min-width: 860px; }
+}
 </style>
 </head>
 <body>
