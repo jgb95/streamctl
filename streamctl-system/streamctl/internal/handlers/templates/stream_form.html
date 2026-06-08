@@ -50,7 +50,7 @@
 		<div class="hint">
 			Clips play back-to-back as a single uninterrupted stream.
 			All clips must share codec, resolution, frame rate, pixel format, and audio params — verified with ffprobe on save.
-			Use a local uploaded filename or a Spaces object path relative to the configured remote.
+			Use a local uploaded filename, or a Spaces <code>recordings/edits</code> path that has already been processed on the GPU.
 		</div>
 		{{else}}
 		<ol id="clips" class="clip-list">
@@ -75,7 +75,7 @@
 		<button type="button" class="btn" onclick="toggleSpacesBrowser()">Browse Spaces</button>
 		{{end}}
 		<div class="hint">
-			Use Spaces object paths relative to the configured remote. Clips are prefetched to local cache before streaming.
+			Use Spaces <code>recordings/edits</code> paths relative to the configured remote. Remote clips must have verified normalized outputs before scheduling.
 		</div>
 		{{end}}
 		{{if .RemoteBrowse}}

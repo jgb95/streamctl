@@ -583,6 +583,9 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 	if len(videos) == 0 {
 		return nil, nil, nil, fmt.Errorf("at least one video clip required")
 	}
+	if err := h.validateNormalizedStreamVideos(r.Context(), videos); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := h.validateCachedPlaylist(videos); err != nil {
 		return nil, nil, nil, err
 	}
@@ -3260,6 +3263,32 @@ func (h *Handler) validateCachedPlaylist(videos []string) error {
 		return nil
 	}
 	return probe.ValidatePlaylistPaths(paths, labels)
+}
+
+func (h *Handler) validateNormalizedStreamVideos(ctx context.Context, videos []string) error {
+	if strings.TrimSpace(h.Remote) == "" {
+		return nil
+	}
+	for _, v := range videos {
+		if !isRemoteClip(v) {
+			continue
+		}
+		clean := strings.Trim(strings.ReplaceAll(v, "\\", "/"), "/")
+		if strings.Contains(clean, "/recordings/normalized/") {
+			return fmt.Errorf("%s is a normalized output path; schedule the original <conference>/recordings/edits/... path so streamctl can manage cache cleanup and prefetching", v)
+		}
+		if !strings.Contains(clean, "/recordings/edits/") {
+			return fmt.Errorf("%s must be under <conference>/recordings/edits/... to use the normalized GPU workflow", v)
+		}
+		if err := h.verifyNormalizedOutput(ctx, clean); err != nil {
+			normalizedPath, pathErr := livestreamNormalizedPath(clean)
+			if pathErr != nil {
+				return fmt.Errorf("%s is not a valid livestream recording path: %w", v, pathErr)
+			}
+			return fmt.Errorf("%s is not ready for scheduling: %w. Process it from Livestream Files first; expected normalized output is %s", v, err, normalizedPath)
+		}
+	}
+	return nil
 }
 
 func (h *Handler) localClipPath(source string) string {
