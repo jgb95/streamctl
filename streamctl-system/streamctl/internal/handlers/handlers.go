@@ -1418,6 +1418,15 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 	if !shouldDestroy {
 		return
 	}
+	openQueue, err := h.DB.ListOpenGPUQueueItems(1)
+	if err != nil {
+		log.Printf("GPU worker cleanup skipped after job %s: checking queue failed: %v", job.UnitName, err)
+		return
+	}
+	if len(openQueue) > 0 {
+		log.Printf("GPU worker cleanup skipped after job %s: queue still has open work", job.UnitName)
+		return
+	}
 	if h.hasRunPodToken() {
 		client, err := h.runpodClient()
 		if err != nil {
