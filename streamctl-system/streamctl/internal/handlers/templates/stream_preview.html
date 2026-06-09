@@ -10,13 +10,22 @@
 </div>
 
 <section class="preview-panel">
+	{{if .PlaylistReady}}
 	<video id="hls-preview" controls playsinline preload="metadata"></video>
 	<div id="preview-status" class="hint">Loading preview...</div>
+	{{else}}
+	<div class="preview-empty">
+		<h3>Preview is not available yet</h3>
+		<p>The HLS playlist has not been generated for this stream. Start the stream first, then refresh this page after the first HLS segments are written.</p>
+	</div>
+	{{end}}
 	<div class="unit-meta" style="border-bottom: 0;">
 		<span>HLS playlist: <code>{{.LiveURL}}</code></span>
+		{{if .PlaylistUpdated}}<span>Updated: {{.PlaylistUpdated}}</span>{{end}}
 	</div>
 </section>
 
+{{if .PlaylistReady}}
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
 <script>
 const video = document.getElementById('hls-preview');
@@ -37,10 +46,16 @@ if (video.canPlayType('application/vnd.apple.mpegurl')) {
 	hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus('HLS preview ready.'));
 	hls.on(Hls.Events.ERROR, (_, data) => {
 		const detail = data && data.details ? data.details : 'unknown error';
-		setStatus(`Preview error: ${detail}`);
+		const response = data && data.response && data.response.code ? ` HTTP ${data.response.code}` : '';
+		if (detail === 'manifestLoadError') {
+			setStatus(`Preview unavailable: the HLS playlist could not be loaded${response}. The stream may have ended or the playlist may not be written yet.`);
+			return;
+		}
+		setStatus(`Preview error: ${detail}${response}`);
 	});
 } else {
 	setStatus('This browser cannot play HLS previews.');
 }
 </script>
+{{end}}
 {{end}}

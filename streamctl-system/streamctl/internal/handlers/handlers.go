@@ -417,9 +417,19 @@ func (h *Handler) streamPreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	liveURL := fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID)
+	playlistPath := filepath.Join(h.HLSDir, fmt.Sprintf("stream-%d", s.ID), "index.m3u8")
+	playlistReady := false
+	playlistUpdated := ""
+	if info, err := os.Stat(playlistPath); err == nil && !info.IsDir() {
+		playlistReady = true
+		playlistUpdated = info.ModTime().Format("2006-01-02 15:04:05")
+	}
 	h.render(w, "stream_preview.html", map[string]any{
-		"Stream":  s,
-		"LiveURL": fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID),
+		"Stream":          s,
+		"LiveURL":         liveURL,
+		"PlaylistReady":   playlistReady,
+		"PlaylistUpdated": playlistUpdated,
 	})
 }
 
