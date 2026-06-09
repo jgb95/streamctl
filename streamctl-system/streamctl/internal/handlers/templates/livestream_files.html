@@ -146,10 +146,10 @@
 					<td>{{if .LastError}}{{.LastError}}{{else}}<span class="muted">none</span>{{end}}</td>
 					<td>
 						{{if .UnitName}}<a class="btn" href="/gpu-worker/logs/{{.UnitName}}">Logs</a>{{end}}
-						{{if or (eq .Status "running") .Stale}}
-						<form method="post" action="/livestream-files/requeue" style="background: none; border: none; padding: 0; margin-top: 8px;" onsubmit="return confirm('Requeue this running job?');">
+						{{if or (eq .Status "queued") (eq .Status "running") (eq .Status "failed") (eq .Status "cancelled") .Stale}}
+						<form method="post" action="/livestream-files/requeue" style="background: none; border: none; padding: 0; margin-top: 8px;" onsubmit="return confirm('Retry this GPU job?');">
 							<input type="hidden" name="path" value="{{.RawPath}}">
-							<button type="submit" class="btn">Requeue</button>
+							<button type="submit" class="btn">{{if eq .Status "queued"}}Retry{{else}}Requeue{{end}}</button>
 						</form>
 						{{end}}
 					</td>
@@ -261,10 +261,10 @@
 				{{else}}
 				<a class="btn" href="/gpu-worker/logs/{{.ProcessingUnit}}">Logs</a>
 				{{end}}
-				{{if or (eq .ProcessingState "running") .ProcessingStale}}
-				<form method="post" action="/livestream-files/requeue" style="background: none; border: none; padding: 0; margin-top: 8px;" onsubmit="return confirm('Requeue this running job?');">
+				{{if or (eq .ProcessingState "queued") (eq .ProcessingState "running") .ProcessingStale}}
+				<form method="post" action="/livestream-files/requeue" style="background: none; border: none; padding: 0; margin-top: 8px;" onsubmit="return confirm('Retry this GPU job?');">
 					<input type="hidden" name="path" value="{{.RawPath}}">
-					<button type="submit" class="btn">Requeue</button>
+					<button type="submit" class="btn">{{if eq .ProcessingState "queued"}}Retry{{else}}Requeue{{end}}</button>
 				</form>
 				{{end}}
 				{{else if and $.GPUConfigured (or (not $.GPUWorker.Managed) (eq $.GPUWorker.Status "active"))}}

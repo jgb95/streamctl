@@ -858,6 +858,29 @@ func (db *DB) RequeueRunningGPUJob(rawPath, lastError string) error {
 	return nil
 }
 
+func (db *DB) ResetGPUJobForRetry(rawPath, lastError string) error {
+	result, err := db.Exec(`
+		UPDATE gpu_job_queue
+		SET status = 'queued',
+			unit_name = '',
+			last_error = ?,
+			started_at = NULL,
+			finished_at = NULL
+		WHERE raw_path = ? AND status IN ('queued', 'running', 'failed', 'cancelled')
+	`, lastError, rawPath)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (db *DB) MarkGPUQueueFinished(rawPath, status, lastError string) error {
 	if status == "" {
 		status = "finished"

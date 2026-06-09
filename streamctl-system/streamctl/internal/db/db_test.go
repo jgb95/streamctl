@@ -79,3 +79,29 @@ func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows for duplicate terminal update, got %v", err)
 	}
 }
+
+func TestResetGPUJobForRetryHandlesQueuedJobs(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := database.EnqueueGPUJob("vienna/recordings/edits/talks/stuck.mov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResetGPUJobForRetry(item.RawPath, "manual retry"); err != nil {
+		t.Fatal(err)
+	}
+	item, err = database.GetGPUQueueItemByRawPath(item.RawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != "queued" || item.UnitName != "" || item.LastError != "manual retry" || item.AttemptCount != 0 {
+		t.Fatalf("queued retry reset produced unexpected item: %#v", item)
+	}
+}

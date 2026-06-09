@@ -1079,12 +1079,12 @@ func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.DB.RequeueRunningGPUJob(rawPath, "manually requeued from livestream files page"); err != nil {
+	if err := h.DB.ResetGPUJobForRetry(rawPath, "manually retried from livestream files page"); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "job is not currently running", http.StatusBadRequest)
+			http.Error(w, "job is not retryable", http.StatusBadRequest)
 			return
 		}
-		http.Error(w, fmt.Sprintf("requeueing GPU job failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("retrying GPU job failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 	if err := h.saveGPUJobLog(gpuJobView{
