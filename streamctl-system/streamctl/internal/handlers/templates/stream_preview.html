@@ -31,17 +31,40 @@
 const video = document.getElementById('hls-preview');
 const statusEl = document.getElementById('preview-status');
 const src = {{printf "%q" .LiveURL}};
+const absoluteSrc = new URL(src, window.location.href).toString();
 
 function setStatus(text) {
 	if (statusEl) statusEl.textContent = text;
 }
 
-if (video.canPlayType('application/vnd.apple.mpegurl')) {
-	video.src = src;
-	setStatus('Native HLS preview ready.');
-} else if (window.Hls && Hls.isSupported()) {
+async function loadPreview() {
+	let manifest;
+	try {
+		const res = await fetch(absoluteSrc, { cache: 'no-store' });
+		manifest = await res.text();
+		if (!res.ok) {
+			setStatus(`Preview unavailable: HLS playlist returned HTTP ${res.status}.`);
+			return;
+		}
+	} catch (err) {
+		setStatus(`Preview unavailable: HLS playlist request failed: ${err}`);
+		return;
+	}
+	if (!manifest.startsWith('#EXTM3U')) {
+		setStatus('Preview unavailable: HLS playlist response was not an M3U8 manifest.');
+		return;
+	}
+	if (video.canPlayType('application/vnd.apple.mpegurl')) {
+		video.src = absoluteSrc;
+		setStatus('Native HLS preview ready.');
+		return;
+	}
+	if (!window.Hls || !Hls.isSupported()) {
+		setStatus('This browser cannot play HLS previews.');
+		return;
+	}
 	const hls = new Hls({ lowLatencyMode: true });
-	hls.loadSource(src);
+	hls.loadSource(absoluteSrc);
 	hls.attachMedia(video);
 	hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus('HLS preview ready.'));
 	hls.on(Hls.Events.ERROR, (_, data) => {
@@ -53,9 +76,9 @@ if (video.canPlayType('application/vnd.apple.mpegurl')) {
 		}
 		setStatus(`Preview error: ${detail}${response}`);
 	});
-} else {
-	setStatus('This browser cannot play HLS previews.');
 }
+
+loadPreview();
 </script>
 {{end}}
 {{end}}
