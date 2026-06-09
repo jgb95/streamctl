@@ -105,3 +105,44 @@ func TestResetGPUJobForRetryHandlesQueuedJobs(t *testing.T) {
 		t.Fatalf("queued retry reset produced unexpected item: %#v", item)
 	}
 }
+
+func TestVisibleGPUQueueItemsExcludeFinished(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	finished, err := database.EnqueueGPUJob("vienna/recordings/edits/finished.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueFinished(finished.RawPath, "finished", ""); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := database.EnqueueGPUJob("vienna/recordings/edits/failed.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueFinished(failed.RawPath, "failed", "boom"); err != nil {
+		t.Fatal(err)
+	}
+
+	visible, err := database.ListVisibleGPUQueueItems(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 1 || visible[0].RawPath != failed.RawPath {
+		t.Fatalf("visible items should include failed but not finished: %#v", visible)
+	}
+	failedItems, err := database.ListFailedGPUQueueItems(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failedItems) != 1 || failedItems[0].RawPath != failed.RawPath {
+		t.Fatalf("failed items mismatch: %#v", failedItems)
+	}
+}

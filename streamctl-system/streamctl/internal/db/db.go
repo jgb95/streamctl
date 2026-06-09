@@ -768,23 +768,53 @@ func (db *DB) ListOpenGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
 	return out, rows.Err()
 }
 
-func (db *DB) ListRecentGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
+func (db *DB) ListVisibleGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
 	if limit <= 0 {
 		limit = 25
 	}
 	rows, err := db.Query(`
 		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
 		FROM gpu_job_queue
+		WHERE status IN ('queued', 'running', 'failed', 'cancelled')
 		ORDER BY
 			CASE status
 				WHEN 'running' THEN 0
 				WHEN 'queued' THEN 1
 				WHEN 'failed' THEN 2
 				WHEN 'cancelled' THEN 3
-				ELSE 4
 			END,
 			COALESCE(last_attempt_at, started_at, finished_at, created_at) DESC,
 			id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GPUJobQueueItem
+	for rows.Next() {
+		var item GPUJobQueueItem
+		var lastAttemptAt, startedAt, finishedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.RawPath, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
+			return nil, err
+		}
+		item.LastAttemptAt = nullTimePtr(lastAttemptAt)
+		item.StartedAt = nullTimePtr(startedAt)
+		item.FinishedAt = nullTimePtr(finishedAt)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) ListFailedGPUQueueItems(limit int) ([]GPUJobQueueItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.Query(`
+		SELECT id, raw_path, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at
+		FROM gpu_job_queue
+		WHERE status = 'failed'
+		ORDER BY COALESCE(finished_at, last_attempt_at, created_at) DESC, id DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {

@@ -104,6 +104,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/livestream-files/process-selected", h.auth(http.HandlerFunc(h.livestreamFilesProcessSelected)))
 	mux.Handle("/livestream-files/requeue", h.auth(http.HandlerFunc(h.livestreamFileRequeue)))
 	mux.Handle("/livestream-files/requeue-stale", h.auth(http.HandlerFunc(h.livestreamFilesRequeueStale)))
+	mux.Handle("/livestream-files/clear-resolved-failures", h.auth(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
 	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
@@ -980,6 +981,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		"Queued":           r.URL.Query().Get("queued"),
 		"Requeued":         r.URL.Query().Get("requeued"),
 		"RequeuedStale":    r.URL.Query().Get("requeued_stale"),
+		"ClearedFailures":  r.URL.Query().Get("cleared_failures"),
 		"StaleCount":       staleCount,
 		"QueuedCount":      queuedCount,
 		"RunningCount":     runningCount,
@@ -1138,6 +1140,28 @@ func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Req
 	}
 	q := url.Values{}
 	q.Set("requeued_stale", strconv.Itoa(requeued))
+	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+}
+
+func (h *Handler) livestreamFilesClearResolvedFailures(w http.ResponseWriter, r *http.Request) {
+	items, err := h.DB.ListFailedGPUQueueItems(1000)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("listing failed GPU jobs failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	cleared := 0
+	for _, item := range items {
+		if err := h.verifyNormalizedOutput(r.Context(), item.RawPath); err != nil {
+			continue
+		}
+		if err := h.DB.MarkGPUQueueFinished(item.RawPath, "finished", "resolved failure; normalized output is ready"); err != nil {
+			log.Printf("clearing resolved failed GPU job %s failed: %v", item.RawPath, err)
+			continue
+		}
+		cleared++
+	}
+	q := url.Values{}
+	q.Set("cleared_failures", strconv.Itoa(cleared))
 	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
 }
 
@@ -1555,7 +1579,7 @@ func (h *Handler) gpuQueueDashboard(jobs []gpuJobView, nowProcessing gpuJobView)
 	if err != nil {
 		return gpuQueueDashboardView{}, err
 	}
-	items, err := h.DB.ListRecentGPUQueueItems(30)
+	items, err := h.DB.ListVisibleGPUQueueItems(30)
 	if err != nil {
 		return gpuQueueDashboardView{}, err
 	}

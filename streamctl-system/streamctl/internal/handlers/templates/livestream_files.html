@@ -10,6 +10,7 @@
 {{if .Queued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Queued {{.Queued}} file{{if ne .Queued "1"}}s{{end}} for GPU processing.</div>{{end}}
 {{if .Requeued}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Requeued <code>{{.Requeued}}</code>.</div>{{end}}
 {{if .RequeuedStale}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Requeued {{.RequeuedStale}} stale job{{if ne .RequeuedStale "1"}}s{{end}}.</div>{{end}}
+{{if .ClearedFailures}}<div class="error" style="border-color: var(--success); color: var(--success); background: rgba(93,211,158,0.1);">Cleared {{.ClearedFailures}} resolved failed job{{if ne .ClearedFailures "1"}}s{{end}}.</div>{{end}}
 
 <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
 	<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -117,6 +118,11 @@
 			<div class="queue-card"><span>Failed</span><strong>{{.GPUQueue.Failed}}</strong></div>
 			<div class="queue-card"><span>Finished</span><strong>{{.GPUQueue.Finished}}</strong></div>
 		</div>
+		{{if .GPUQueue.Failed}}
+		<form method="post" action="/livestream-files/clear-resolved-failures" style="background: none; border: none; padding: 0; margin-top: 10px;" onsubmit="return confirm('Clear failed rows that now have verified normalized outputs?');">
+			<button type="submit" class="btn">Clear resolved failures</button>
+		</form>
+		{{end}}
 		{{if .GPUQueue.LastError}}
 		<div class="inline-error" style="margin-left: 0; margin-right: 0;">Last queue error: {{.GPUQueue.LastError}}</div>
 		{{end}}
@@ -158,7 +164,7 @@
 			</tbody>
 		</table>
 		{{else}}
-		<div class="hint">No GPU queue history yet.</div>
+		<div class="hint">No active, queued, or failed GPU jobs.</div>
 		{{end}}
 	</div>
 	{{if .GPUStatus.Available}}
