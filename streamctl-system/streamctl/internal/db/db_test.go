@@ -80,6 +80,48 @@ func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
 	}
 }
 
+func TestUpsertGPUJobLogKeepsExistingDetailWhenRefreshIsSparse(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	unit := "streamctl-gpu-talk.service"
+	if err := database.UpsertGPUJobLog(GPUJobLog{
+		UnitName:    unit,
+		RawPath:     "vienna/recordings/edits/talk.mp4",
+		Host:        "ssh://root@example",
+		Description: "streamctl GPU transcode vienna/recordings/edits/talk.mp4",
+		ActiveState: "failed",
+		SubState:    "failed",
+		Result:      "exit-code",
+		Journal:     "rclone: object not found",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertGPUJobLog(GPUJobLog{
+		UnitName: unit,
+		Error:    "remote job metadata: connection refused",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := database.GetGPUJobLog(unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.RawPath != "vienna/recordings/edits/talk.mp4" || job.Result != "exit-code" || job.Journal != "rclone: object not found" {
+		t.Fatalf("sparse refresh should preserve previous job detail: %#v", job)
+	}
+	if job.Error != "remote job metadata: connection refused" {
+		t.Fatalf("sparse refresh should record new error: %#v", job)
+	}
+}
+
 func TestResetGPUJobForRetryHandlesQueuedJobs(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
 	if err != nil {

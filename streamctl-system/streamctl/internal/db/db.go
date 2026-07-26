@@ -610,14 +610,14 @@ func (db *DB) UpsertGPUJobLog(job GPUJobLog) error {
 			unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(unit_name) DO UPDATE SET
-			raw_path = excluded.raw_path,
-			host = excluded.host,
-			description = excluded.description,
-			active_state = excluded.active_state,
-			sub_state = excluded.sub_state,
-			result = excluded.result,
-			journal = excluded.journal,
-			error = excluded.error,
+			raw_path = COALESCE(NULLIF(excluded.raw_path, ''), gpu_job_logs.raw_path),
+			host = COALESCE(NULLIF(excluded.host, ''), gpu_job_logs.host),
+			description = COALESCE(NULLIF(excluded.description, ''), gpu_job_logs.description),
+			active_state = COALESCE(NULLIF(excluded.active_state, ''), gpu_job_logs.active_state),
+			sub_state = COALESCE(NULLIF(excluded.sub_state, ''), gpu_job_logs.sub_state),
+			result = COALESCE(NULLIF(excluded.result, ''), gpu_job_logs.result),
+			journal = COALESCE(NULLIF(excluded.journal, ''), gpu_job_logs.journal),
+			error = COALESCE(NULLIF(excluded.error, ''), gpu_job_logs.error),
 			updated_at = CURRENT_TIMESTAMP
 	`, job.UnitName, job.RawPath, job.Host, job.Description, job.ActiveState, job.SubState, job.Result, job.Journal, job.Error)
 	return err

@@ -1800,7 +1800,7 @@ func (h *Handler) markGPUQueueTerminal(ctx context.Context, rawPath string, job 
 	}
 	lastError := ""
 	if status == "failed" {
-		lastError = firstNonEmptyString(strings.TrimSpace(job.Error), strings.TrimSpace(job.Result), strings.TrimSpace(job.ActiveState))
+		lastError = firstNonEmptyString(strings.TrimSpace(job.Error), gpuFailureJournalSummary(job.Journal), strings.TrimSpace(job.Result), strings.TrimSpace(job.ActiveState))
 	} else if err := h.verifyNormalizedOutput(ctx, rawPath); err != nil {
 		status = "failed"
 		lastError = "post-processing verification failed: " + err.Error()
@@ -1808,6 +1808,22 @@ func (h *Handler) markGPUQueueTerminal(ctx context.Context, rawPath string, job 
 	if err := h.DB.MarkGPUQueueFinished(rawPath, status, lastError); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		log.Printf("marking GPU queue %s %s failed: %v", rawPath, status, err)
 	}
+}
+
+func gpuFailureJournalSummary(journal string) string {
+	lines := strings.Split(strings.TrimSpace(journal), "\n")
+	var out []string
+	for i := len(lines) - 1; i >= 0 && len(out) < 5; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return strings.Join(out, "\n")
 }
 
 func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpuJobView) {
