@@ -2869,8 +2869,8 @@ func (h *Handler) listSpacesFilesRecursive(ctx context.Context, prefix string) (
 func livestreamNormalizedPath(rawPath string) (string, error) {
 	rawPath = strings.TrimSpace(strings.ReplaceAll(rawPath, "\\", "/"))
 	parts := strings.Split(rawPath, "/")
-	if len(parts) < 5 || parts[1] != "recordings" || parts[2] != "edits" {
-		return "", fmt.Errorf("path must be <conference>/recordings/edits/<path>/<file>")
+	if len(parts) < 4 || parts[1] != "recordings" || parts[2] != "edits" {
+		return "", fmt.Errorf("path must be <conference>/recordings/edits/[path/]<file>")
 	}
 	file := parts[len(parts)-1]
 	if !isVideoFile(file) {

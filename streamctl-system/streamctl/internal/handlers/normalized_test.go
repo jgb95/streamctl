@@ -8,6 +8,18 @@ import (
 	"testing"
 )
 
+func TestLivestreamNormalizedPathAllowsFileDirectlyUnderEdits(t *testing.T) {
+	rawPath := "toronto/recordings/edits/03main1545_fork-strategies-from-the-front-lines.mp4"
+	want := "toronto/recordings/normalized/03main1545_fork-strategies-from-the-front-lines.mp4"
+	got, err := livestreamNormalizedPath(rawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("normalized path = %q, want %q", got, want)
+	}
+}
+
 func TestValidateNormalizedStreamVideos(t *testing.T) {
 	binDir := t.TempDir()
 	rclonePath := filepath.Join(binDir, "rclone")
