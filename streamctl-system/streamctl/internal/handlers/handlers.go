@@ -3202,6 +3202,29 @@ func (h *Handler) rcloneLsf(ctx context.Context, prefix string, extraArgs ...str
 	return strings.Split(text, "\n"), nil
 }
 
+func (h *Handler) rcloneLsl(ctx context.Context, prefix string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rclone", "lsl", h.remotePath(prefix))
+	if strings.TrimSpace(h.RcloneConfig) != "" {
+		cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+h.RcloneConfig)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("rclone lsl %s: %s", prefix, msg)
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return nil, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
 func (h *Handler) rcloneCat(ctx context.Context, prefix string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -3226,20 +3249,14 @@ func (h *Handler) spacesFileExists(ctx context.Context, filePath string) (bool, 
 	if filePath == "" {
 		return false, fmt.Errorf("empty file path")
 	}
-	dir := path.Dir(filePath)
-	if dir == "." {
-		dir = ""
-	}
-	if dir != "" {
-		dir += "/"
-	}
 	want := path.Base(filePath)
-	lines, err := h.rcloneLsf(ctx, dir, "--files-only")
+	lines, err := h.rcloneLsl(ctx, filePath)
 	if err != nil {
 		return false, err
 	}
 	for _, line := range lines {
-		if strings.Trim(strings.TrimSpace(line), "/") == want {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && strings.Trim(strings.TrimSpace(fields[len(fields)-1]), "/") == want {
 			return true, nil
 		}
 	}

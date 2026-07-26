@@ -16,10 +16,10 @@ set -eu
 cmd="$1"
 target="$2"
 case "$cmd:$target" in
-  lsf:spaces:btcpp/vienna/recordings/normalized/stage/)
-    printf 'talk.mp4\n'
+  lsl:spaces:btcpp/vienna/recordings/normalized/stage/talk.mp4)
+    printf '123 2026-06-25 08:13:04.043805718 talk.mp4\n'
     ;;
-  lsf:spaces:btcpp/vienna/recordings/normalized/missing/)
+  lsl:spaces:btcpp/vienna/recordings/normalized/missing/talk.mp4)
     ;;
   cat:spaces:btcpp/vienna/recordings/normalized/stage/talk.mp4.ready.json)
     cat <<'JSON'
@@ -61,8 +61,8 @@ set -eu
 cmd="$1"
 target="$2"
 case "$cmd:$target" in
-  lsf:spaces:btcpp/vienna/recordings/normalized/stage/)
-    printf 'talk.mp4\n'
+  lsl:spaces:btcpp/vienna/recordings/normalized/stage/talk.mp4)
+    printf '123 2026-06-25 08:13:04.043805718 talk.mp4\n'
     ;;
   cat:spaces:btcpp/vienna/recordings/normalized/stage/talk.mp4.ready.json)
     cat <<'JSON'
