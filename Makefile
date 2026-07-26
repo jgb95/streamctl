@@ -14,6 +14,7 @@ export DIGITALOCEAN_TOKEN := $(shell doctl auth token 2>/dev/null)
 # Cache the droplet's IP across recipes that need it.
 # This shells out to terraform once per make invocation, not per recipe.
 IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
+NIXOS_REBUILD := $(shell if command -v nixos-rebuild >/dev/null 2>&1; then printf 'nixos-rebuild'; else printf 'nix develop --command nixos-rebuild'; fi)
 
 .PHONY: help init plan create ip wait-for-nixos pull-hardware-config \
         bootstrap-secret deploy deploy-local-build deploy-dry update \
@@ -101,18 +102,18 @@ bootstrap-secret: check-ip ## Generate a streamctl login secret on the droplet.
 # ---------- deploys ----------
 
 deploy: check-ip ## Push the current NixOS config to the droplet (build on droplet).
-	nixos-rebuild switch \
+	$(NIXOS_REBUILD) switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP)
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
-	nixos-rebuild switch \
+	$(NIXOS_REBUILD) switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP)
 
 deploy-dry: check-ip ## Test the config without switching (validation only).
-	nixos-rebuild dry-activate \
+	$(NIXOS_REBUILD) dry-activate \
 	  --flake .#streamctl \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP)

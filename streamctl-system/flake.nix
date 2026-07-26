@@ -334,7 +334,12 @@
     # Per-system outputs (the package, devshell).
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [
+            "terraform"
+          ];
+        };
       in
       {
         packages.default = streamctlPackage pkgs;

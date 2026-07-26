@@ -9,9 +9,12 @@ SHELL := /usr/bin/env bash
 DIGITALOCEAN_TOKEN := $(strip $(DIGITAL_OCEAN_TOKEN))
 export DIGITALOCEAN_TOKEN
 
+TERRAFORM := $(shell if command -v terraform >/dev/null 2>&1; then printf 'terraform'; else printf 'nix develop --command terraform'; fi)
+NIXOS_REBUILD := $(shell if command -v nixos-rebuild >/dev/null 2>&1; then printf 'nixos-rebuild'; else printf 'nix develop --command nixos-rebuild'; fi)
+
 # Cache the droplet's IP across recipes that need it.
 # This shells out to terraform once per make invocation, not per recipe.
-IP := $(shell cd terraform && terraform output -raw ipv4 2>/dev/null)
+IP := $(shell cd terraform && $(TERRAFORM) output -raw ipv4 2>/dev/null)
 
 .PHONY: help init plan create ip wait-for-nixos pull-hardware-config \
         bootstrap-secret deploy deploy-local-build deploy-dry update \
@@ -54,15 +57,15 @@ check-ip:
 # ---------- one-time setup ----------
 
 init: ## Initialize Terraform (run once after clone).
-	cd terraform && terraform init
+	cd terraform && $(TERRAFORM) init
 
 plan: check-token ## Show what Terraform would do without applying.
-	cd terraform && terraform plan
+	cd terraform && $(TERRAFORM) plan
 
 # ---------- provisioning ----------
 
 create: check-token ## Create the droplet via Terraform (~1 min + ~5 min for nixos-infect).
-	cd terraform && terraform apply
+	cd terraform && $(TERRAFORM) apply
 	@echo
 	@echo "Droplet created. Wait ~5 minutes for nixos-infect to finish, then:"
 	@echo "  make wait-for-nixos"
@@ -118,7 +121,7 @@ bootstrap-secret: check-ip ## Generate a streamctl login secret on the droplet.
 # ---------- deploys ----------
 
 deploy: check-ip ## Push the current NixOS config to the droplet (build on droplet).
-	nixos-rebuild switch \
+	$(NIXOS_REBUILD) switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP) \
@@ -128,7 +131,7 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
 	@$(MAKE) maybe-install-runpod-token
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
-	nixos-rebuild switch \
+	$(NIXOS_REBUILD) switch \
 	  --flake .#streamctl \
 	  --target-host root@$(IP)
 	@$(MAKE) maybe-install-rclone-config
@@ -136,7 +139,7 @@ deploy-local-build: check-ip ## Deploy but build locally, then copy result to dr
 	@$(MAKE) maybe-install-runpod-token
 
 deploy-dry: check-ip ## Test the config without switching (validation only).
-	nixos-rebuild dry-activate \
+	$(NIXOS_REBUILD) dry-activate \
 	  --flake .#streamctl \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP)
@@ -285,6 +288,6 @@ gpu-transcode: ## Start one NVENC transcode job on the GPU VM.
 # ---------- teardown ----------
 
 destroy: check-token ## Destroy the droplet. Prompts for confirmation.
-	cd terraform && terraform destroy
+	cd terraform && $(TERRAFORM) destroy
 
 .DEFAULT_GOAL := help
