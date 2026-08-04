@@ -115,6 +115,58 @@ func TestGPUQueueMetrics(t *testing.T) {
 	}
 }
 
+func TestRenderQueueLifecycleAndRetry(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := database.EnqueueRenderJob("opening titles", `{"project":{"name":"opening"},"timeline":{"duration_frames":48,"fps":24},"output":{"path":"/output/opening.mp4","width":1920,"height":1080,"format":"mp4","codec":"h264"},"scenes":[{"id":"one","start_frame":0,"end_frame":48,"background":{"color":"#000000"},"layers":[]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != "queued" || item.AttemptCount != 0 {
+		t.Fatalf("unexpected new item: %+v", item)
+	}
+
+	if err := database.MarkRenderQueueRunning(item.ID, "streamctl-render-opening-1.service"); err != nil {
+		t.Fatal(err)
+	}
+	running, err := database.GetRenderQueueItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.Status != "running" || running.AttemptCount != 1 || running.UnitName == "" || running.StartedAt == nil {
+		t.Fatalf("unexpected running item: %+v", running)
+	}
+
+	if err := database.MarkRenderQueueFinished(item.ID, "failed", "renderer exited 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResetRenderJobForRetry(item.ID, "manual retry"); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := database.NextQueuedRenderJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ID != item.ID || retried.Status != "queued" || retried.UnitName != "" || retried.AttemptCount != 1 {
+		t.Fatalf("unexpected retried item: %+v", retried)
+	}
+
+	counts, err := database.RenderQueueStatusCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["queued"] != 1 {
+		t.Fatalf("unexpected counts: %#v", counts)
+	}
+}
+
 func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
 	if err != nil {

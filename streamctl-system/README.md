@@ -70,8 +70,9 @@ streamctl-system/
 3. You configure RTMP endpoints (YouTube, X) once with stream keys
 4. You schedule a stream: pick a video, pick endpoints, set a time (one-shot or recurring)
 5. systemd fires at the scheduled time; ffmpeg pushes the video to all selected endpoints simultaneously via the `tee` muxer (no re-encoding, just `-c copy`)
+6. You can also submit version 1 `conf-render` manifests to a durable queue that shares the configured GPU worker with livestream normalization jobs
 
-The web app generates systemd units rather than managing a worker queue. This means scheduled streams keep running even if the web app crashes or restarts.
+Scheduled streams use generated systemd units, while GPU transcodes and `conf-render` submissions use durable SQLite queues. The shared GPU dispatcher runs one job at a time and gives livestream transcodes priority over renders.
 
 ## Prerequisites on your laptop
 
@@ -202,6 +203,24 @@ make timers                # list scheduled streams
 make stream-logs ID=3      # specific scheduled stream
 ```
 
+**Queue a `conf-render` manifest:**
+
+1. Ensure `conf-render` and its runtime dependencies are installed on the GPU worker.
+2. Configure the worker command and persistent output root in `nixos/configuration.nix` if the defaults do not match:
+
+   ```nix
+   services.streamctl = {
+     renderWorkerCommand = "/root/conf-render/.venv/bin/conf-render";
+     renderOutputDir = "/root/streamctl-render-output";
+   };
+   ```
+
+3. Open **Render Jobs**, paste a version 1 manifest, and submit it. Referenced source, overlay, and audio paths must be absolute paths already visible on the worker.
+
+streamctl performs structural validation locally, stages the manifest with mode `0700`/`umask 077`, asks `conf-render validate` to perform authoritative validation, and then starts a transient worker unit. Output is retained under `<renderOutputDir>/<streamctl-job-id>/`; staged manifests and work files are removed after terminal completion. Failed or cancelled jobs can be retried from the same page.
+
+The queue is durable across streamctl restarts. Worker-side result markers allow streamctl to reconcile a completed transient unit after reconnecting. Managed workers are not destroyed while either a transcode or render remains queued/running.
+
 **Tear it all down:**
 
 ```bash
@@ -218,7 +237,7 @@ make build        # build the binary; output at ./result/bin/cmd
 make run-local    # run on :8080 with /tmp/streamctl-local/ as data dir
 ```
 
-`run-local` won't actually be able to call `systemctl` (you're not root), so scheduled streams will fail to register — but the UI, endpoint management, and stream creation all work for testing the frontend.
+`run-local` won't actually be able to call `systemctl` (you're not root), so scheduled streams will fail to register. The UI, endpoint management, stream creation, and render manifest validation/queue persistence can still be tested; actual render dispatch requires a configured SSH-accessible GPU worker.
 
 ## All Make targets
 

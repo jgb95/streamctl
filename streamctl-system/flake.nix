@@ -135,6 +135,18 @@
               description = "Command path on the GPU worker that accepts one Spaces object path.";
             };
 
+            renderWorkerCommand = lib.mkOption {
+              type = lib.types.str;
+              default = "/root/conf-render/.venv/bin/conf-render";
+              description = "conf-render executable on the shared GPU worker.";
+            };
+
+            renderOutputDir = lib.mkOption {
+              type = lib.types.str;
+              default = "/root/streamctl-render-output";
+              description = "Persistent output directory on the GPU worker, partitioned by streamctl render job ID.";
+            };
+
             digitalOceanTokenFile = lib.mkOption {
               type = lib.types.str;
               default = "";
@@ -343,6 +355,8 @@
                     ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-token-file=${lib.escapeShellArg cfg.btcppAPITokenFile} \\"}
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
                     -gpu-worker-command=${cfg.gpuWorkerCommand} \
+                    -render-worker-command=${cfg.renderWorkerCommand} \
+                    -render-output-dir=${cfg.renderOutputDir} \
                     -do-token-file=${cfg.digitalOceanTokenFile} \
                     -runpod-token-file=${cfg.runpodTokenFile} \
                     -runpod-pod-name=${lib.escapeShellArg cfg.runpodPodName} \

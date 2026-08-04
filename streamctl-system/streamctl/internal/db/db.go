@@ -129,6 +129,20 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 
 CREATE INDEX IF NOT EXISTS auth_sessions_expires_at_idx ON auth_sessions (expires_at);
 CREATE INDEX IF NOT EXISTS oauth_login_states_expires_at_idx ON oauth_login_states (expires_at);
+
+CREATE TABLE IF NOT EXISTS render_job_queue (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	manifest_json TEXT NOT NULL,
+	unit_name TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'queued',
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	last_attempt_at DATETIME,
+	last_error TEXT NOT NULL DEFAULT '',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	started_at DATETIME,
+	finished_at DATETIME
+);
 `
 
 func (db *DB) Migrate() error {
@@ -371,6 +385,23 @@ type GPUQueueMetrics struct {
 	Counts         map[string]int
 	Attempts       int
 	OldestQueuedAt *time.Time
+}
+
+// RenderJobQueueItem is an independently queued conf-render manifest. Render
+// jobs share the GPU worker with transcode jobs, but deliberately use their own
+// table and lifecycle so the existing transcode queue remains unchanged.
+type RenderJobQueueItem struct {
+	ID            int64
+	Name          string
+	ManifestJSON  string
+	UnitName      string
+	Status        string
+	AttemptCount  int
+	LastAttemptAt *time.Time
+	LastError     string
+	CreatedAt     time.Time
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
 }
 
 // ---------- Endpoint queries ----------
@@ -1025,6 +1056,151 @@ func (db *DB) ResolveGPUQueueFailure(rawPath, detail string) error {
 		SET status = 'finished', last_error = ?, finished_at = CURRENT_TIMESTAMP
 		WHERE raw_path = ? AND status = 'failed'
 	`, detail, rawPath)
+	return requireRow(result, err)
+}
+
+// ---------- conf-render queue queries ----------
+
+const renderJobColumns = `id, name, manifest_json, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at`
+
+func (db *DB) EnqueueRenderJob(name, manifestJSON string) (*RenderJobQueueItem, error) {
+	result, err := db.Exec(`INSERT INTO render_job_queue (name, manifest_json) VALUES (?, ?)`, name, manifestJSON)
+	if err != nil {
+		return nil, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return db.GetRenderQueueItem(id)
+}
+
+func (db *DB) GetRenderQueueItem(id int64) (*RenderJobQueueItem, error) {
+	return scanRenderJob(db.QueryRow(`SELECT `+renderJobColumns+` FROM render_job_queue WHERE id = ?`, id))
+}
+
+func (db *DB) GetRenderQueueItemByUnitName(unitName string) (*RenderJobQueueItem, error) {
+	return scanRenderJob(db.QueryRow(`SELECT `+renderJobColumns+` FROM render_job_queue WHERE unit_name = ?`, unitName))
+}
+
+func (db *DB) NextQueuedRenderJob() (*RenderJobQueueItem, error) {
+	return scanRenderJob(db.QueryRow(`
+		SELECT ` + renderJobColumns + ` FROM render_job_queue
+		WHERE status = 'queued' ORDER BY created_at, id LIMIT 1
+	`))
+}
+
+func (db *DB) ListOpenRenderQueueItems(limit int) ([]RenderJobQueueItem, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return db.listRenderJobs(`
+		SELECT `+renderJobColumns+` FROM render_job_queue
+		WHERE status IN ('queued', 'running') ORDER BY created_at, id LIMIT ?
+	`, limit)
+}
+
+func (db *DB) ListVisibleRenderQueueItems(limit int) ([]RenderJobQueueItem, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	return db.listRenderJobs(`
+		SELECT `+renderJobColumns+` FROM render_job_queue
+		ORDER BY created_at DESC, id DESC LIMIT ?
+	`, limit)
+}
+
+func (db *DB) RenderQueueStatusCounts() (map[string]int, error) {
+	rows, err := db.Query(`SELECT status, count(*) FROM render_job_queue GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) MarkRenderQueueRunning(id int64, unitName string) error {
+	result, err := db.Exec(`
+		UPDATE render_job_queue SET status = 'running', unit_name = ?,
+			attempt_count = attempt_count + 1, last_attempt_at = CURRENT_TIMESTAMP,
+			last_error = '', started_at = CURRENT_TIMESTAMP, finished_at = NULL
+		WHERE id = ? AND status = 'queued'
+	`, unitName, id)
+	return requireRow(result, err)
+}
+
+func (db *DB) RequeueRunningRenderJob(id int64, lastError string) error {
+	result, err := db.Exec(`
+		UPDATE render_job_queue SET status = 'queued', unit_name = '', last_error = ?,
+			started_at = NULL, finished_at = NULL
+		WHERE id = ? AND status = 'running'
+	`, lastError, id)
+	return requireRow(result, err)
+}
+
+func (db *DB) ResetRenderJobForRetry(id int64, lastError string) error {
+	result, err := db.Exec(`
+		UPDATE render_job_queue SET status = 'queued', unit_name = '', last_error = ?,
+			started_at = NULL, finished_at = NULL
+		WHERE id = ? AND status IN ('failed', 'cancelled')
+	`, lastError, id)
+	return requireRow(result, err)
+}
+
+func (db *DB) MarkRenderQueueFinished(id int64, status, lastError string) error {
+	if status == "" {
+		status = "finished"
+	}
+	result, err := db.Exec(`
+		UPDATE render_job_queue SET status = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND status IN ('queued', 'running')
+	`, status, lastError, id)
+	return requireRow(result, err)
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRenderJob(row rowScanner) (*RenderJobQueueItem, error) {
+	var item RenderJobQueueItem
+	var lastAttemptAt, startedAt, finishedAt sql.NullTime
+	if err := row.Scan(&item.ID, &item.Name, &item.ManifestJSON, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
+		return nil, err
+	}
+	item.LastAttemptAt = nullTimePtr(lastAttemptAt)
+	item.StartedAt = nullTimePtr(startedAt)
+	item.FinishedAt = nullTimePtr(finishedAt)
+	return &item, nil
+}
+
+func (db *DB) listRenderJobs(query string, args ...any) ([]RenderJobQueueItem, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RenderJobQueueItem
+	for rows.Next() {
+		item, err := scanRenderJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
+}
+
+func requireRow(result sql.Result, err error) error {
 	if err != nil {
 		return err
 	}

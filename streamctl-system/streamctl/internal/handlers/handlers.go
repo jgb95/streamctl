@@ -42,32 +42,34 @@ var templateFS embed.FS
 const gpuWorkerSSHKeyPath = "/var/lib/streamctl/gpu-worker-ssh-key"
 
 type Handler struct {
-	DB                 *db.DB
-	Secret             string
-	VideoDir           string
-	CacheDir           string
-	HLSDir             string
-	Remote             string
-	RcloneConfig       string
-	NostrKeyDir        string
-	NostrKeyOwner      string
-	GPUWorkerHost      string
-	GPUWorkerCommand   string
-	DOTokenFile        string
-	RunPodTokenFile    string
-	RunPodPodName      string
-	RunPodGPUType      string
-	RunPodImage        string
-	RunPodCloudType    string
-	GPUDropletName     string
-	GPUDropletRegion   string
-	GPUDropletSize     string
-	GPUDropletImage    string
-	GPUSSHKeyName      string
-	GPUWorkerUser      string
-	GPUDestroyAfterJob bool
-	Systemd            *systemd.Manager
-	OAuth              *btcppoauth.Client
+	DB                  *db.DB
+	Secret              string
+	VideoDir            string
+	CacheDir            string
+	HLSDir              string
+	Remote              string
+	RcloneConfig        string
+	NostrKeyDir         string
+	NostrKeyOwner       string
+	GPUWorkerHost       string
+	GPUWorkerCommand    string
+	RenderWorkerCommand string
+	RenderOutputDir     string
+	DOTokenFile         string
+	RunPodTokenFile     string
+	RunPodPodName       string
+	RunPodGPUType       string
+	RunPodImage         string
+	RunPodCloudType     string
+	GPUDropletName      string
+	GPUDropletRegion    string
+	GPUDropletSize      string
+	GPUDropletImage     string
+	GPUSSHKeyName       string
+	GPUWorkerUser       string
+	GPUDestroyAfterJob  bool
+	Systemd             *systemd.Manager
+	OAuth               *btcppoauth.Client
 
 	funcs      template.FuncMap
 	gpuQueueMu sync.Mutex
@@ -112,6 +114,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
+	mux.Handle("/render-jobs", h.auth(http.HandlerFunc(h.renderJobs)))
+	mux.Handle("/render-jobs/create", h.mutation(http.HandlerFunc(h.renderJobCreate)))
+	mux.Handle("/render-jobs/retry/", h.mutation(http.HandlerFunc(h.renderJobRetry)))
 
 	mux.Handle("/endpoints", h.auth(http.HandlerFunc(h.endpoints)))
 	mux.Handle("/endpoints/create", h.mutation(http.HandlerFunc(h.endpointCreate)))
@@ -1704,6 +1709,11 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 			openQueue = h.reconcileStaleGPUQueue(worker, nil, openQueue)
 			queuedCount, _ = countGPUQueueStates(openQueue)
 		}
+		if renderCounts, err := h.DB.RenderQueueStatusCounts(); err != nil {
+			log.Printf("counting queued render jobs failed: %v", err)
+		} else {
+			queuedCount += renderCounts["queued"]
+		}
 		if queuedCount > 0 && h.hasRunPodToken() && worker.Status == "not found" {
 			if err := h.ensureRunPodWorker(ctx, h.RunPodGPUType); err != nil {
 				log.Printf("creating RunPod worker for queued GPU jobs failed: %v", err)
@@ -1726,6 +1736,7 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	if status.Error != "" {
 		log.Printf("GPU queue status warning: %s", status.Error)
 	}
+	h.reconcileRenderJobs(ctx, host, status.Jobs)
 	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
 	if err != nil {
 		log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
@@ -1742,6 +1753,9 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("loading next queued GPU job failed: %v", err)
+		}
+		if errors.Is(err, sql.ErrNoRows) && h.dispatchNextRender(ctx, host) {
+			return
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("GPU queue dispatch skipped: no queued jobs")
@@ -1828,6 +1842,15 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 	}
 	if len(openQueue) > 0 {
 		log.Printf("GPU worker cleanup skipped after job %s: queue still has open work", job.UnitName)
+		return
+	}
+	renderCounts, err := h.DB.RenderQueueStatusCounts()
+	if err != nil {
+		log.Printf("GPU worker cleanup skipped after job %s: checking render queue failed: %v", job.UnitName, err)
+		return
+	}
+	if renderCounts["queued"] > 0 || renderCounts["running"] > 0 {
+		log.Printf("GPU worker cleanup skipped after job %s: render queue still has open work", job.UnitName)
 		return
 	}
 	if h.hasRunPodToken() {

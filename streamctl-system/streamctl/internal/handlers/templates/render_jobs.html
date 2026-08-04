@@ -1,0 +1,56 @@
+{{define "render_jobs.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<h2>conf-render jobs</h2>
+<p class="muted">Jobs share the GPU worker with livestream transcodes. Transcodes run first; one worker job runs at a time.</p>
+
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+<div class="queue-cards" style="margin-bottom: 16px;">
+	<div class="queue-card"><span>Queued</span><strong>{{.Queued}}</strong></div>
+	<div class="queue-card"><span>Running</span><strong>{{.Running}}</strong></div>
+	<div class="queue-card"><span>Failed</span><strong>{{.Failed}}</strong></div>
+	<div class="queue-card"><span>Finished</span><strong>{{.Finished}}</strong></div>
+</div>
+
+<form method="post" action="/render-jobs/create">
+	{{csrfField}}
+	<h2 style="margin-top: 0;">Queue a manifest</h2>
+	<div class="field">
+		<label for="name">Name</label>
+		<input id="name" name="name" type="text" placeholder="Opening titles">
+	</div>
+	<div class="field">
+		<label for="manifest">conf-render v1 manifest JSON</label>
+		<textarea id="manifest" name="manifest" rows="18" required spellcheck="false" placeholder='{"version":1,"jobs":[...]}'></textarea>
+		<div class="hint">Source, overlay, and audio paths must be absolute paths already visible on the worker. The manifest is validated again by conf-render before execution. Temporary manifests and work files are removed after terminal completion; outputs remain under the configured worker output directory.</div>
+	</div>
+	<button class="btn btn-primary" type="submit">Queue render</button>
+</form>
+
+<h2>Recent jobs</h2>
+{{if .Items}}
+<div class="table-wrap">
+<table class="queue-table">
+	<thead><tr><th>Status</th><th>Job</th><th>Attempts</th><th>Timing</th><th>Last error</th><th></th></tr></thead>
+	<tbody>
+	{{range .Items}}
+	<tr>
+		<td>
+			{{if eq .Status "running"}}<span class="badge badge-now">running</span>
+			{{else if eq .Status "queued"}}<span class="badge badge-queued">queued</span>
+			{{else if eq .Status "failed"}}<span class="badge badge-failed">failed</span>
+			{{else if eq .Status "finished"}}<span class="badge badge-active">finished</span>
+			{{else}}<span class="badge badge-inactive">{{.Status}}</span>{{end}}
+		</td>
+		<td><strong>{{.Name}}</strong><div><code>#{{.ID}}{{if .UnitName}} · {{.UnitName}}{{end}}</code></div></td>
+		<td>{{.AttemptCount}}</td>
+		<td><div>queued {{.CreatedAt}}</div>{{if .StartedAt}}<div class="muted">started {{.StartedAt}}</div>{{end}}{{if .FinishedAt}}<div class="muted">ended {{.FinishedAt}}</div>{{end}}</td>
+		<td>{{if .LastError}}<code>{{.LastError}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+		<td>{{if or (eq .Status "failed") (eq .Status "cancelled")}}<form method="post" action="/render-jobs/retry/{{.ID}}" style="background:none;border:0;padding:0;">{{csrfField}}<button class="btn" type="submit">Retry</button></form>{{end}}</td>
+	</tr>
+	{{end}}
+	</tbody>
+</table>
+</div>
+{{else}}<p class="muted">No render jobs queued yet.</p>{{end}}
+{{end}}

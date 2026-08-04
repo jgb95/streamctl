@@ -47,45 +47,47 @@ func main() {
 	}
 
 	var (
-		listen             = flag.String("listen", ":8080", "address to listen on")
-		dbPath             = flag.String("db", "/var/lib/streamctl/streamctl.db", "path to SQLite database")
-		videoDir           = flag.String("video-dir", "/var/lib/streamctl/videos", "directory containing video files")
-		cacheDir           = flag.String("cache-dir", "/var/lib/streamctl/cache", "directory for prefetched remote video files")
-		hlsDir             = flag.String("hls-dir", "/var/lib/streamctl/hls", "directory for generated HLS playlists and segments")
-		remote             = flag.String("remote", "", "rclone remote for Spaces objects, e.g. spaces:bucket")
-		rcloneCfg          = flag.String("rclone-config", "", "path to rclone config file for generated prefetch services")
-		notifyEmail        = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
-		sendmailPath       = flag.String("sendmail", "/run/current-system/sw/bin/sendmail", "sendmail-compatible binary for notifications")
-		cleanupCache       = flag.Bool("cleanup-cache", true, "delete cached remote files after successful streaming")
-		normalize          = flag.Bool("normalize-prefetch", true, "re-encode prefetched remote clips to streaming-friendly CBR before streaming")
-		videoBitrate       = flag.String("normalize-video-bitrate", "6800k", "video bitrate for normalized prefetched clips")
-		audioBitrate       = flag.String("normalize-audio-bitrate", "160k", "audio bitrate for normalized prefetched clips")
-		nostrKeyDir        = flag.String("nostr-key-dir", "/var/lib/streamctl/nostr-keys", "directory for stored Nostr private keys")
-		publicBaseURL      = flag.String("public-base-url", "", "public base URL used in Nostr live events, e.g. https://stream.example.com")
-		btcppOAuthBase     = flag.String("btcpp-oauth-base", "https://btcpp.dev", "Bitcoin++ OAuth server base URL")
-		btcppOAuthClientID = flag.String("btcpp-oauth-client-id", "", "registered Bitcoin++ OAuth client ID")
-		btcppOAuthSecret   = flag.String("btcpp-oauth-client-secret-file", "", "path to a private Bitcoin++ OAuth client secret file")
-		btcppOAuthRedirect = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
-		btcppAPIBase       = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used for broadcast status")
-		btcppAPITokenFile  = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token used for broadcast status")
-		gpuWorkerHost      = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
-		gpuWorkerCommand   = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
-		doTokenFile        = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
-		runpodTokenFile    = flag.String("runpod-token-file", "", "RunPod API token file for managed GPU workers")
-		runpodPodName      = flag.String("runpod-pod-name", "streamctl-gpu-worker", "managed RunPod pod name")
-		runpodGPUType      = flag.String("runpod-gpu-type", "NVIDIA L40S", "managed RunPod GPU type ID")
-		runpodImage        = flag.String("runpod-image", "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04", "managed RunPod container image")
-		runpodCloudType    = flag.String("runpod-cloud-type", "SECURE", "managed RunPod cloud type")
-		gpuDropletName     = flag.String("gpu-droplet-name", "streamctl-gpu-worker", "managed GPU Droplet name")
-		gpuDropletRegion   = flag.String("gpu-droplet-region", "nyc2", "managed GPU Droplet region")
-		gpuDropletSize     = flag.String("gpu-droplet-size", "gpu-h100x1-80gb", "managed GPU Droplet size slug")
-		gpuDropletImage    = flag.String("gpu-droplet-image", "gpu-h100x1-base", "managed GPU Droplet image slug")
-		gpuSSHKeyName      = flag.String("gpu-ssh-key-name", "streamctl-deploy", "DigitalOcean SSH key name to install on managed GPU Droplets")
-		gpuWorkerUser      = flag.String("gpu-worker-user", "root", "SSH user for managed GPU Droplets")
-		gpuDestroyAfterJob = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful transcode job")
-		unitDir            = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
-		unitPrefix         = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
-		runUser            = flag.String("run-user", "streamctl", "user to run streams as")
+		listen              = flag.String("listen", ":8080", "address to listen on")
+		dbPath              = flag.String("db", "/var/lib/streamctl/streamctl.db", "path to SQLite database")
+		videoDir            = flag.String("video-dir", "/var/lib/streamctl/videos", "directory containing video files")
+		cacheDir            = flag.String("cache-dir", "/var/lib/streamctl/cache", "directory for prefetched remote video files")
+		hlsDir              = flag.String("hls-dir", "/var/lib/streamctl/hls", "directory for generated HLS playlists and segments")
+		remote              = flag.String("remote", "", "rclone remote for Spaces objects, e.g. spaces:bucket")
+		rcloneCfg           = flag.String("rclone-config", "", "path to rclone config file for generated prefetch services")
+		notifyEmail         = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
+		sendmailPath        = flag.String("sendmail", "/run/current-system/sw/bin/sendmail", "sendmail-compatible binary for notifications")
+		cleanupCache        = flag.Bool("cleanup-cache", true, "delete cached remote files after successful streaming")
+		normalize           = flag.Bool("normalize-prefetch", true, "re-encode prefetched remote clips to streaming-friendly CBR before streaming")
+		videoBitrate        = flag.String("normalize-video-bitrate", "6800k", "video bitrate for normalized prefetched clips")
+		audioBitrate        = flag.String("normalize-audio-bitrate", "160k", "audio bitrate for normalized prefetched clips")
+		nostrKeyDir         = flag.String("nostr-key-dir", "/var/lib/streamctl/nostr-keys", "directory for stored Nostr private keys")
+		publicBaseURL       = flag.String("public-base-url", "", "public base URL used in Nostr live events, e.g. https://stream.example.com")
+		btcppOAuthBase      = flag.String("btcpp-oauth-base", "https://btcpp.dev", "Bitcoin++ OAuth server base URL")
+		btcppOAuthClientID  = flag.String("btcpp-oauth-client-id", "", "registered Bitcoin++ OAuth client ID")
+		btcppOAuthSecret    = flag.String("btcpp-oauth-client-secret-file", "", "path to a private Bitcoin++ OAuth client secret file")
+		btcppOAuthRedirect  = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
+		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used for broadcast status")
+		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token used for broadcast status")
+		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
+		gpuWorkerCommand    = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
+		renderWorkerCommand = flag.String("render-worker-command", "/root/conf-render/.venv/bin/conf-render", "conf-render command on the GPU worker")
+		renderOutputDir     = flag.String("render-output-dir", "/root/streamctl-render-output", "persistent output directory on the GPU worker")
+		doTokenFile         = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
+		runpodTokenFile     = flag.String("runpod-token-file", "", "RunPod API token file for managed GPU workers")
+		runpodPodName       = flag.String("runpod-pod-name", "streamctl-gpu-worker", "managed RunPod pod name")
+		runpodGPUType       = flag.String("runpod-gpu-type", "NVIDIA L40S", "managed RunPod GPU type ID")
+		runpodImage         = flag.String("runpod-image", "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04", "managed RunPod container image")
+		runpodCloudType     = flag.String("runpod-cloud-type", "SECURE", "managed RunPod cloud type")
+		gpuDropletName      = flag.String("gpu-droplet-name", "streamctl-gpu-worker", "managed GPU Droplet name")
+		gpuDropletRegion    = flag.String("gpu-droplet-region", "nyc2", "managed GPU Droplet region")
+		gpuDropletSize      = flag.String("gpu-droplet-size", "gpu-h100x1-80gb", "managed GPU Droplet size slug")
+		gpuDropletImage     = flag.String("gpu-droplet-image", "gpu-h100x1-base", "managed GPU Droplet image slug")
+		gpuSSHKeyName       = flag.String("gpu-ssh-key-name", "streamctl-deploy", "DigitalOcean SSH key name to install on managed GPU Droplets")
+		gpuWorkerUser       = flag.String("gpu-worker-user", "root", "SSH user for managed GPU Droplets")
+		gpuDestroyAfterJob  = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful transcode job")
+		unitDir             = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
+		unitPrefix          = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
+		runUser             = flag.String("run-user", "streamctl", "user to run streams as")
 	)
 	flag.Parse()
 
@@ -159,32 +161,34 @@ func main() {
 	}
 
 	h := &handlers.Handler{
-		DB:                 database,
-		Secret:             secret,
-		VideoDir:           *videoDir,
-		CacheDir:           *cacheDir,
-		HLSDir:             *hlsDir,
-		Remote:             *remote,
-		RcloneConfig:       *rcloneCfg,
-		NostrKeyDir:        *nostrKeyDir,
-		NostrKeyOwner:      *runUser,
-		GPUWorkerHost:      strings.TrimSpace(*gpuWorkerHost),
-		GPUWorkerCommand:   strings.TrimSpace(*gpuWorkerCommand),
-		DOTokenFile:        strings.TrimSpace(*doTokenFile),
-		RunPodTokenFile:    strings.TrimSpace(*runpodTokenFile),
-		RunPodPodName:      strings.TrimSpace(*runpodPodName),
-		RunPodGPUType:      strings.TrimSpace(*runpodGPUType),
-		RunPodImage:        strings.TrimSpace(*runpodImage),
-		RunPodCloudType:    strings.TrimSpace(*runpodCloudType),
-		GPUDropletName:     strings.TrimSpace(*gpuDropletName),
-		GPUDropletRegion:   strings.TrimSpace(*gpuDropletRegion),
-		GPUDropletSize:     strings.TrimSpace(*gpuDropletSize),
-		GPUDropletImage:    strings.TrimSpace(*gpuDropletImage),
-		GPUSSHKeyName:      strings.TrimSpace(*gpuSSHKeyName),
-		GPUWorkerUser:      strings.TrimSpace(*gpuWorkerUser),
-		GPUDestroyAfterJob: *gpuDestroyAfterJob,
-		Systemd:            sysd,
-		OAuth:              oauthClient,
+		DB:                  database,
+		Secret:              secret,
+		VideoDir:            *videoDir,
+		CacheDir:            *cacheDir,
+		HLSDir:              *hlsDir,
+		Remote:              *remote,
+		RcloneConfig:        *rcloneCfg,
+		NostrKeyDir:         *nostrKeyDir,
+		NostrKeyOwner:       *runUser,
+		GPUWorkerHost:       strings.TrimSpace(*gpuWorkerHost),
+		GPUWorkerCommand:    strings.TrimSpace(*gpuWorkerCommand),
+		RenderWorkerCommand: strings.TrimSpace(*renderWorkerCommand),
+		RenderOutputDir:     strings.TrimRight(strings.TrimSpace(*renderOutputDir), "/"),
+		DOTokenFile:         strings.TrimSpace(*doTokenFile),
+		RunPodTokenFile:     strings.TrimSpace(*runpodTokenFile),
+		RunPodPodName:       strings.TrimSpace(*runpodPodName),
+		RunPodGPUType:       strings.TrimSpace(*runpodGPUType),
+		RunPodImage:         strings.TrimSpace(*runpodImage),
+		RunPodCloudType:     strings.TrimSpace(*runpodCloudType),
+		GPUDropletName:      strings.TrimSpace(*gpuDropletName),
+		GPUDropletRegion:    strings.TrimSpace(*gpuDropletRegion),
+		GPUDropletSize:      strings.TrimSpace(*gpuDropletSize),
+		GPUDropletImage:     strings.TrimSpace(*gpuDropletImage),
+		GPUSSHKeyName:       strings.TrimSpace(*gpuSSHKeyName),
+		GPUWorkerUser:       strings.TrimSpace(*gpuWorkerUser),
+		GPUDestroyAfterJob:  *gpuDestroyAfterJob,
+		Systemd:             sysd,
+		OAuth:               oauthClient,
 	}
 
 	mux := http.NewServeMux()
