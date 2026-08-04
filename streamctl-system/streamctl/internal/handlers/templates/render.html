@@ -1,0 +1,6 @@
+{{define "render.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;"><div><h2 style="margin:0;">Render</h2><div class="muted">Prepare a conf-render manifest, then enqueue it for the GPU worker.</div></div><a href="/worker" class="btn" style="margin-left:auto;">View worker</a></div>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<form method="post" action="/render/create">{{csrfField}}<h2 style="margin-top:0;">Queue a manifest</h2><div class="field"><label for="name">Name</label><input id="name" name="name" type="text" placeholder="Opening titles"></div><div class="field"><label for="manifest">conf-render v1 manifest JSON</label><textarea id="manifest" name="manifest" rows="18" required spellcheck="false" placeholder='{"version":1,"jobs":[...]}'></textarea><div class="hint">Raw JSON is the initial staging interface. Source, overlay, and audio paths must be absolute paths visible on the worker.</div></div><button class="btn btn-primary">Queue render</button></form>
+{{end}}

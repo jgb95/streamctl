@@ -105,16 +105,26 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
 	mux.Handle("/streams/preview/", h.auth(http.HandlerFunc(h.streamPreview)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
-	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(h.livestreamFiles)))
+	mux.Handle("/livestream", h.auth(http.HandlerFunc(h.livestreamFiles)))
+	mux.Handle("/livestream/process", h.mutation(http.HandlerFunc(h.livestreamFileProcess)))
+	mux.Handle("/livestream/process-selected", h.mutation(http.HandlerFunc(h.livestreamFilesProcessSelected)))
+	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(redirectTo("/livestream"))))
 	mux.Handle("/livestream-files/process", h.mutation(http.HandlerFunc(h.livestreamFileProcess)))
 	mux.Handle("/livestream-files/process-selected", h.mutation(http.HandlerFunc(h.livestreamFilesProcessSelected)))
+	mux.Handle("/worker", h.auth(http.HandlerFunc(h.worker)))
+	mux.Handle("/worker/normalize/requeue", h.mutation(http.HandlerFunc(h.livestreamFileRequeue)))
+	mux.Handle("/worker/normalize/requeue-stale", h.mutation(http.HandlerFunc(h.livestreamFilesRequeueStale)))
+	mux.Handle("/worker/normalize/clear-resolved-failures", h.mutation(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
 	mux.Handle("/livestream-files/requeue", h.mutation(http.HandlerFunc(h.livestreamFileRequeue)))
 	mux.Handle("/livestream-files/requeue-stale", h.mutation(http.HandlerFunc(h.livestreamFilesRequeueStale)))
 	mux.Handle("/livestream-files/clear-resolved-failures", h.mutation(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
 	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
-	mux.Handle("/render-jobs", h.auth(http.HandlerFunc(h.renderJobs)))
+	mux.Handle("/render", h.auth(http.HandlerFunc(h.renderJobs)))
+	mux.Handle("/render/create", h.mutation(http.HandlerFunc(h.renderJobCreate)))
+	mux.Handle("/worker/render/retry/", h.mutation(http.HandlerFunc(h.renderJobRetry)))
+	mux.Handle("/render-jobs", h.auth(http.HandlerFunc(redirectTo("/render"))))
 	mux.Handle("/render-jobs/create", h.mutation(http.HandlerFunc(h.renderJobCreate)))
 	mux.Handle("/render-jobs/retry/", h.mutation(http.HandlerFunc(h.renderJobRetry)))
 
@@ -132,6 +142,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/nostr/relays/update/", h.mutation(http.HandlerFunc(h.nostrRelayUpdate)))
 	mux.Handle("/nostr/relays/delete/", h.mutation(http.HandlerFunc(h.nostrRelayDelete)))
 	go h.gpuQueueDispatcher()
+}
+
+func redirectTo(path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, path, http.StatusPermanentRedirect)
+	}
 }
 
 // liveFile serves generated HLS playlists and segments publicly. Nostr live
@@ -931,35 +947,17 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	openQueue = h.reconcileStaleGPUQueue(worker, gpuStatus.Jobs, openQueue)
 	nowProcessing := currentLivestreamGPUJob(gpuStatus.Jobs)
-	queueDashboard, err := h.gpuQueueDashboard(gpuStatus.Jobs, nowProcessing)
-	if err != nil {
-		log.Printf("loading GPU queue dashboard failed: %v", err)
-	}
 	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
-	staleCount := countStaleLivestreamFiles(files)
-	queuedCount, runningCount := countGPUQueueStates(openQueue)
 	files = unprocessedLivestreamFiles(files)
-	gpuAvailability := h.gpuAvailability(r.Context())
-	h.render(w, r, "livestream_files.html", map[string]any{
-		"Files":            files,
-		"GPUConfigured":    worker.Configured,
-		"GPUWorkerHost":    h.GPUWorkerHost,
-		"GPUWorker":        worker,
-		"GPUStatus":        gpuStatus,
-		"GPUQueue":         queueDashboard,
-		"GPUAvailability":  gpuAvailability,
-		"Started":          r.URL.Query().Get("started"),
-		"Job":              r.URL.Query().Get("job"),
-		"Queued":           r.URL.Query().Get("queued"),
-		"Requeued":         r.URL.Query().Get("requeued"),
-		"RequeuedStale":    r.URL.Query().Get("requeued_stale"),
-		"ClearedFailures":  r.URL.Query().Get("cleared_failures"),
-		"StaleCount":       staleCount,
-		"QueuedCount":      queuedCount,
-		"RunningCount":     runningCount,
-		"QueueNeedsWorker": queuedCount > 0 && worker.Managed && worker.Status != "active",
-		"NowProcessing":    nowProcessing,
-		"Error":            r.URL.Query().Get("err"),
+	h.render(w, r, "livestream.html", map[string]any{
+		"Files":         files,
+		"GPUConfigured": worker.Configured,
+		"GPUWorker":     worker,
+		"Started":       r.URL.Query().Get("started"),
+		"Job":           r.URL.Query().Get("job"),
+		"Queued":        r.URL.Query().Get("queued"),
+		"NowProcessing": nowProcessing,
+		"Error":         r.URL.Query().Get("err"),
 	})
 }
 
@@ -997,7 +995,7 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 	if item.UnitName != "" {
 		q.Set("job", item.UnitName)
 	}
-	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/livestream?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.Request) {
@@ -1040,7 +1038,7 @@ func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.
 	}
 	q := url.Values{}
 	q.Set("queued", strconv.Itoa(queued))
-	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/livestream?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) {
@@ -1073,7 +1071,7 @@ func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) 
 
 	q := url.Values{}
 	q.Set("requeued", rawPath)
-	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Request) {
@@ -1112,7 +1110,7 @@ func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Req
 	}
 	q := url.Values{}
 	q.Set("requeued_stale", strconv.Itoa(requeued))
-	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (h *Handler) livestreamFilesClearResolvedFailures(w http.ResponseWriter, r *http.Request) {
@@ -1134,7 +1132,7 @@ func (h *Handler) livestreamFilesClearResolvedFailures(w http.ResponseWriter, r 
 	}
 	q := url.Values{}
 	q.Set("cleared_failures", strconv.Itoa(cleared))
-	http.Redirect(w, r, "/livestream-files?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
@@ -2162,7 +2160,7 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(existing) > 0 {
-		http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+		http.Redirect(w, r, "/worker", http.StatusSeeOther)
 		return
 	}
 	key, err := h.gpuSSHKey(r.Context(), client)
@@ -2188,7 +2186,7 @@ func (h *Handler) gpuWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+	http.Redirect(w, r, "/worker", http.StatusSeeOther)
 }
 
 func (h *Handler) gpuAvailability(ctx context.Context) gpuAvailabilityView {
@@ -2367,7 +2365,7 @@ func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+	http.Redirect(w, r, "/worker", http.StatusSeeOther)
 }
 
 func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error {
@@ -2441,7 +2439,7 @@ func (h *Handler) runpodWorkerDestroy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+	http.Redirect(w, r, "/worker", http.StatusSeeOther)
 }
 
 func (h *Handler) runpodWorkerEnv(sshPublicKey string) (map[string]string, error) {
@@ -2513,7 +2511,7 @@ func (h *Handler) gpuWorkerDestroy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.Redirect(w, r, "/livestream-files", http.StatusSeeOther)
+	http.Redirect(w, r, "/worker", http.StatusSeeOther)
 }
 
 func (h *Handler) doClient() (*doclient.Client, error) {

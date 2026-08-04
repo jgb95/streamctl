@@ -110,6 +110,10 @@ func validateRenderManifest(raw []byte) error {
 }
 
 func (h *Handler) renderJobs(w http.ResponseWriter, r *http.Request) {
+	h.render(w, r, "render.html", map[string]any{"Error": r.URL.Query().Get("err")})
+}
+
+func (h *Handler) renderQueueView() renderJobsView {
 	items, err := h.DB.ListVisibleRenderQueueItems(50)
 	view := renderJobsView{}
 	if err != nil {
@@ -132,7 +136,7 @@ func (h *Handler) renderJobs(w http.ResponseWriter, r *http.Request) {
 		view.Queued, view.Running, view.Failed = counts["queued"], counts["running"], counts["failed"]
 		view.Finished, view.Cancelled = counts["finished"], counts["cancelled"]
 	}
-	h.render(w, r, "render_jobs.html", view)
+	return view
 }
 
 func (h *Handler) renderJobCreate(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +163,7 @@ func (h *Handler) renderJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go h.dispatchGPUQueueOnce(context.Background())
-	http.Redirect(w, r, "/render-jobs", http.StatusSeeOther)
+	http.Redirect(w, r, "/render", http.StatusSeeOther)
 }
 
 func (h *Handler) renderJobRetry(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +171,11 @@ func (h *Handler) renderJobRetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/render-jobs/retry/"), 10, 64)
+	idText := strings.TrimPrefix(r.URL.Path, "/worker/render/retry/")
+	if idText == r.URL.Path {
+		idText = strings.TrimPrefix(r.URL.Path, "/render-jobs/retry/")
+	}
+	id, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || id <= 0 {
 		http.NotFound(w, r)
 		return
@@ -177,7 +185,7 @@ func (h *Handler) renderJobRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go h.dispatchGPUQueueOnce(context.Background())
-	http.Redirect(w, r, "/render-jobs", http.StatusSeeOther)
+	http.Redirect(w, r, "/worker", http.StatusSeeOther)
 }
 
 func renderUnitName(id int64) string  { return fmt.Sprintf("streamctl-gpu-render-%d.service", id) }
