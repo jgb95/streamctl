@@ -105,19 +105,22 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
 	mux.Handle("/streams/preview/", h.auth(http.HandlerFunc(h.streamPreview)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
-	mux.Handle("/livestream", h.auth(http.HandlerFunc(h.livestreamFiles)))
-	mux.Handle("/livestream/process", h.mutation(http.HandlerFunc(h.livestreamFileProcess)))
-	mux.Handle("/livestream/process-selected", h.mutation(http.HandlerFunc(h.livestreamFilesProcessSelected)))
-	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(redirectTo("/livestream"))))
-	mux.Handle("/livestream-files/process", h.mutation(http.HandlerFunc(h.livestreamFileProcess)))
-	mux.Handle("/livestream-files/process-selected", h.mutation(http.HandlerFunc(h.livestreamFilesProcessSelected)))
+	mux.Handle("/normalize", h.auth(http.HandlerFunc(h.normalizationFiles)))
+	mux.Handle("/normalize/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
+	mux.Handle("/normalize/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
+	mux.Handle("/livestream", h.auth(http.HandlerFunc(redirectTo("/normalize"))))
+	mux.Handle("/livestream/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
+	mux.Handle("/livestream/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
+	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(redirectTo("/normalize"))))
+	mux.Handle("/livestream-files/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
+	mux.Handle("/livestream-files/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
 	mux.Handle("/worker", h.auth(http.HandlerFunc(h.worker)))
-	mux.Handle("/worker/normalize/requeue", h.mutation(http.HandlerFunc(h.livestreamFileRequeue)))
-	mux.Handle("/worker/normalize/requeue-stale", h.mutation(http.HandlerFunc(h.livestreamFilesRequeueStale)))
-	mux.Handle("/worker/normalize/clear-resolved-failures", h.mutation(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
-	mux.Handle("/livestream-files/requeue", h.mutation(http.HandlerFunc(h.livestreamFileRequeue)))
-	mux.Handle("/livestream-files/requeue-stale", h.mutation(http.HandlerFunc(h.livestreamFilesRequeueStale)))
-	mux.Handle("/livestream-files/clear-resolved-failures", h.mutation(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
+	mux.Handle("/worker/normalize/requeue", h.mutation(http.HandlerFunc(h.normalizationFileRequeue)))
+	mux.Handle("/worker/normalize/requeue-stale", h.mutation(http.HandlerFunc(h.normalizationFilesRequeueStale)))
+	mux.Handle("/worker/normalize/clear-resolved-failures", h.mutation(http.HandlerFunc(h.normalizationFilesClearResolvedFailures)))
+	mux.Handle("/livestream-files/requeue", h.mutation(http.HandlerFunc(h.normalizationFileRequeue)))
+	mux.Handle("/livestream-files/requeue-stale", h.mutation(http.HandlerFunc(h.normalizationFilesRequeueStale)))
+	mux.Handle("/livestream-files/clear-resolved-failures", h.mutation(http.HandlerFunc(h.normalizationFilesClearResolvedFailures)))
 	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
@@ -827,9 +830,9 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 	return nil
 }
 
-// ---------- Livestream files ----------
+// ---------- Recording normalization ----------
 
-type livestreamFileView struct {
+type normalizationFileView struct {
 	Conference      string
 	Name            string
 	RawPath         string
@@ -929,12 +932,12 @@ type gpuQueueDashboardView struct {
 	LastError    string
 }
 
-func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) normalizationFiles(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(h.Remote) == "" {
 		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
 		return
 	}
-	files, err := h.listLivestreamFiles(r.Context())
+	files, err := h.listNormalizationFiles(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -946,10 +949,10 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
 	openQueue = h.reconcileStaleGPUQueue(worker, gpuStatus.Jobs, openQueue)
-	nowProcessing := currentLivestreamGPUJob(gpuStatus.Jobs)
-	markLivestreamFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
-	files = unprocessedLivestreamFiles(files)
-	h.render(w, r, "livestream.html", map[string]any{
+	nowProcessing := currentNormalizationGPUJob(gpuStatus.Jobs)
+	markNormalizationFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
+	files = unprocessedNormalizationFiles(files)
+	h.render(w, r, "normalize.html", map[string]any{
 		"Files":         files,
 		"GPUConfigured": worker.Configured,
 		"GPUWorker":     worker,
@@ -961,7 +964,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) normalizationFileProcess(w http.ResponseWriter, r *http.Request) {
 	if !h.gpuWorkerConfigured() {
 		http.Error(w, "GPU worker is not configured", http.StatusBadRequest)
 		return
@@ -971,7 +974,7 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	rawPath := strings.TrimSpace(r.FormValue("path"))
-	if _, err := livestreamNormalizedPath(rawPath); err != nil {
+	if _, err := normalizedRecordingPath(rawPath); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -995,10 +998,10 @@ func (h *Handler) livestreamFileProcess(w http.ResponseWriter, r *http.Request) 
 	if item.UnitName != "" {
 		q.Set("job", item.UnitName)
 	}
-	http.Redirect(w, r, "/livestream?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/normalize?"+q.Encode(), http.StatusSeeOther)
 }
 
-func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) normalizationFilesProcessSelected(w http.ResponseWriter, r *http.Request) {
 	if !h.gpuWorkerConfigured() {
 		http.Error(w, "GPU worker is not configured", http.StatusBadRequest)
 		return
@@ -1014,7 +1017,7 @@ func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.
 		if rawPath == "" {
 			continue
 		}
-		if _, err := livestreamNormalizedPath(rawPath); err != nil {
+		if _, err := normalizedRecordingPath(rawPath); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1038,20 +1041,20 @@ func (h *Handler) livestreamFilesProcessSelected(w http.ResponseWriter, r *http.
 	}
 	q := url.Values{}
 	q.Set("queued", strconv.Itoa(queued))
-	http.Redirect(w, r, "/livestream?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/normalize?"+q.Encode(), http.StatusSeeOther)
 }
 
-func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) normalizationFileRequeue(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	rawPath := strings.TrimSpace(r.FormValue("path"))
-	if _, err := livestreamNormalizedPath(rawPath); err != nil {
+	if _, err := normalizedRecordingPath(rawPath); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.DB.ResetGPUJobForRetry(rawPath, "manually retried from livestream files page"); err != nil {
+	if err := h.DB.ResetGPUJobForRetry(rawPath, "manually retried from Normalize"); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "job is not retryable", http.StatusBadRequest)
 			return
@@ -1074,7 +1077,7 @@ func (h *Handler) livestreamFileRequeue(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
 }
 
-func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) normalizationFilesRequeueStale(w http.ResponseWriter, r *http.Request) {
 	worker := h.gpuWorkerView(r.Context())
 	gpuStatus := h.gpuStatus(r.Context(), worker)
 	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
@@ -1113,7 +1116,7 @@ func (h *Handler) livestreamFilesRequeueStale(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
 }
 
-func (h *Handler) livestreamFilesClearResolvedFailures(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) normalizationFilesClearResolvedFailures(w http.ResponseWriter, r *http.Request) {
 	items, err := h.DB.ListFailedGPUQueueItems(1000)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("listing failed GPU jobs failed: %v", err), http.StatusInternalServerError)
@@ -1464,7 +1467,7 @@ func isBlockingGPUJob(job gpuJobView) bool {
 	return !isTerminalGPUJob(job)
 }
 
-func markLivestreamFilesProcessing(files []livestreamFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem, nowProcessing gpuJobView) {
+func markNormalizationFilesProcessing(files []normalizationFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem, nowProcessing gpuJobView) {
 	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
 	activeByRawPath := map[string]gpuJobView{}
 	for _, job := range jobs {
@@ -1529,7 +1532,7 @@ func activeGPUJobIndexes(jobs []gpuJobView) (map[string]bool, map[string]bool) {
 	return rawPaths, units
 }
 
-func countStaleLivestreamFiles(files []livestreamFileView) int {
+func countStaleNormalizationFiles(files []normalizationFileView) int {
 	count := 0
 	for _, file := range files {
 		if file.ProcessingStale {
@@ -1606,7 +1609,7 @@ func formatOptionalTime(t *time.Time) string {
 	return t.Format("2006-01-02 15:04")
 }
 
-func currentLivestreamGPUJob(jobs []gpuJobView) gpuJobView {
+func currentNormalizationGPUJob(jobs []gpuJobView) gpuJobView {
 	for _, job := range jobs {
 		if isBlockingGPUJob(job) && strings.TrimSpace(job.RawPath) != "" {
 			return job
@@ -1671,7 +1674,7 @@ func managedGPUWorkerDefinitelyUnavailable(worker gpuWorkerView) bool {
 	}
 }
 
-func unprocessedLivestreamFiles(files []livestreamFileView) []livestreamFileView {
+func unprocessedNormalizationFiles(files []normalizationFileView) []normalizationFileView {
 	out := files[:0]
 	for _, file := range files {
 		if file.Processed {
@@ -2778,12 +2781,12 @@ echo "transcode: ready ${normalized_path}"
 `
 }
 
-func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView, error) {
+func (h *Handler) listNormalizationFiles(ctx context.Context) ([]normalizationFileView, error) {
 	confs, err := h.listSpacesConferences(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []livestreamFileView
+	var out []normalizationFileView
 	var outMu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
@@ -2813,13 +2816,13 @@ func (h *Handler) listLivestreamFiles(ctx context.Context) ([]livestreamFileView
 			for _, f := range normalizedFiles {
 				processed[f.Path] = true
 			}
-			var files []livestreamFileView
+			var files []normalizationFileView
 			for _, f := range rawFiles {
-				normalizedPath, err := livestreamNormalizedPath(f.Path)
+				normalizedPath, err := normalizedRecordingPath(f.Path)
 				if err != nil {
 					continue
 				}
-				files = append(files, livestreamFileView{
+				files = append(files, normalizationFileView{
 					Conference:     name,
 					Name:           f.Name,
 					RawPath:        f.Path,
@@ -2873,7 +2876,7 @@ func (h *Handler) listSpacesFilesRecursive(ctx context.Context, prefix string) (
 	return files, nil
 }
 
-func livestreamNormalizedPath(rawPath string) (string, error) {
+func normalizedRecordingPath(rawPath string) (string, error) {
 	rawPath = strings.TrimSpace(strings.ReplaceAll(rawPath, "\\", "/"))
 	parts := strings.Split(rawPath, "/")
 	if len(parts) < 4 || parts[1] != "recordings" || parts[2] != "edits" {
@@ -3271,7 +3274,7 @@ func (h *Handler) spacesFileExists(ctx context.Context, filePath string) (bool, 
 }
 
 func (h *Handler) verifyNormalizedOutput(ctx context.Context, rawPath string) error {
-	normalizedPath, err := livestreamNormalizedPath(rawPath)
+	normalizedPath, err := normalizedRecordingPath(rawPath)
 	if err != nil {
 		return err
 	}
@@ -3373,11 +3376,11 @@ func (h *Handler) validateNormalizedStreamVideos(ctx context.Context, videos []s
 			return fmt.Errorf("%s must be under <conference>/recordings/edits/... to use the normalized GPU workflow", v)
 		}
 		if err := h.verifyNormalizedOutput(ctx, clean); err != nil {
-			normalizedPath, pathErr := livestreamNormalizedPath(clean)
+			normalizedPath, pathErr := normalizedRecordingPath(clean)
 			if pathErr != nil {
-				return fmt.Errorf("%s is not a valid livestream recording path: %w", v, pathErr)
+				return fmt.Errorf("%s is not a valid recording path: %w", v, pathErr)
 			}
-			return fmt.Errorf("%s is not ready for scheduling: %w. Process it from Livestream Files first; expected normalized output is %s", v, err, normalizedPath)
+			return fmt.Errorf("%s is not ready for scheduling: %w. Process it from Normalize first; expected normalized output is %s", v, err, normalizedPath)
 		}
 	}
 	return nil

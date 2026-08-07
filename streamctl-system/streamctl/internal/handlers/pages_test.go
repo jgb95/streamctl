@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"html/template"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,8 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "livestream staging",
-			template: "livestream.html",
+			name:     "normalize staging",
+			template: "normalize.html",
 			data:     map[string]any{},
 			want:     "Select recordings to normalize",
 		},
@@ -43,7 +44,7 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &Handler{}
+			h := &Handler{funcs: template.FuncMap{}}
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodGet, "/", nil)
 			h.render(recorder, request, tt.template, tt.data)
@@ -69,7 +70,8 @@ func TestLegacyPageRedirects(t *testing.T) {
 		legacy string
 		want   string
 	}{
-		{legacy: "/livestream-files", want: "/livestream"},
+		{legacy: "/livestream", want: "/normalize"},
+		{legacy: "/livestream-files", want: "/normalize"},
 		{legacy: "/render-jobs", want: "/render"},
 	}
 

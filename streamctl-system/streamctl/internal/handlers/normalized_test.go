@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestLivestreamNormalizedPathAllowsFileDirectlyUnderEdits(t *testing.T) {
+func TestNormalizedPathAllowsFileDirectlyUnderEdits(t *testing.T) {
 	rawPath := "toronto/recordings/edits/03main1545_fork-strategies-from-the-front-lines.mp4"
 	want := "toronto/recordings/normalized/03main1545_fork-strategies-from-the-front-lines.mp4"
-	got, err := livestreamNormalizedPath(rawPath)
+	got, err := normalizedRecordingPath(rawPath)
 	if err != nil {
 		t.Fatal(err)
 	}

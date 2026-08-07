@@ -13,7 +13,7 @@ func (h *Handler) worker(w http.ResponseWriter, r *http.Request) {
 		log.Printf("listing GPU queue failed: %v", err)
 	}
 	openQueue = h.reconcileStaleGPUQueue(worker, status.Jobs, openQueue)
-	nowProcessing := currentLivestreamGPUJob(status.Jobs)
+	nowProcessing := currentNormalizationGPUJob(status.Jobs)
 	normalizeQueue, queueErr := h.gpuQueueDashboard(status.Jobs, nowProcessing)
 	if queueErr != nil {
 		log.Printf("loading GPU queue dashboard failed: %v", queueErr)
