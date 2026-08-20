@@ -52,6 +52,34 @@ make run-local # runs on :8080 with /tmp/streamctl-local/ as data dir
 
 For end-to-end testing of the systemd integration, deploy to a VM (or to the droplet via `make deploy`).
 
+## Bitcoin++ recording API
+
+Create a personal API token from a `global-admin` Bitcoin++ account with only
+the `recordings:write` scope. Install it outside the Nix store:
+
+```bash
+install -m 0400 /dev/stdin /var/lib/streamctl/btcpp-api-token
+```
+
+The token is read from that file and is never accepted as a CLI argument.
+Discover eligible talks and their recording-consent policy:
+
+```bash
+streamctl btcpp-candidates -conference dev26
+```
+
+Idempotently attach a Spaces object key or published links to a conference
+talk UUID:
+
+```bash
+streamctl btcpp-recording -conference dev26 -talk-id TALK_UUID \
+  -file-uri dev26/recordings/normalized/stage-one/talk.mp4
+```
+
+Use `-api-base http://localhost:8888` for local development. The default is
+`https://btcpp.dev`. The service token must never be placed in Nix source,
+Terraform state, a URL, or shell history.
+
 ## Database
 
 SQLite. Schema lives in `internal/db/db.go`. Tables:

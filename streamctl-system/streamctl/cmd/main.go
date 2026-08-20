@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"streamctl/internal/btcppclient"
 	"streamctl/internal/db"
 	"streamctl/internal/handlers"
 	"streamctl/internal/nostrpub"
@@ -16,6 +19,18 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "btcpp-candidates" {
+		if err := runBTCPPCandidates(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "btcpp-recording" {
+		if err := runBTCPPRecording(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "nostr-publish" {
 		if err := runNostrPublish(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -141,6 +156,92 @@ func main() {
 	if err := http.ListenAndServe(*listen, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func btcppCommandClient(fs *flag.FlagSet) (*string, *string) {
+	baseURL := fs.String("api-base", "https://btcpp.dev", "Bitcoin++ website base URL")
+	tokenFile := fs.String("token-file", "/var/lib/streamctl/btcpp-api-token", "path to a 0400 Bitcoin++ API token file")
+	return baseURL, tokenFile
+}
+
+func runBTCPPCandidates(args []string) error {
+	fs := flag.NewFlagSet("btcpp-candidates", flag.ContinueOnError)
+	baseURL, tokenFile := btcppCommandClient(fs)
+	conference := fs.String("conference", "", "Bitcoin++ conference tag")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*conference) == "" {
+		return fmt.Errorf("conference is required")
+	}
+	token, err := btcppclient.TokenFromFile(*tokenFile)
+	if err != nil {
+		return err
+	}
+	client := &btcppclient.Client{BaseURL: *baseURL, Token: token}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	candidates, err := client.RecordingCandidates(ctx, *conference)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(candidates)
+}
+
+func runBTCPPRecording(args []string) error {
+	fs := flag.NewFlagSet("btcpp-recording", flag.ContinueOnError)
+	baseURL, tokenFile := btcppCommandClient(fs)
+	conference := fs.String("conference", "", "Bitcoin++ conference tag")
+	talkID := fs.String("talk-id", "", "Bitcoin++ conference talk UUID")
+	fileURI := fs.String("file-uri", "", "DigitalOcean Spaces object key")
+	youtubeURL := fs.String("youtube-url", "", "published YouTube URL")
+	xURL := fs.String("x-url", "", "published X post URL")
+	xReplyURL := fs.String("x-reply-url", "", "published X reply URL")
+	publishedAt := fs.String("published-at", "", "RFC3339 publication time; empty leaves it unchanged")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*conference) == "" || strings.TrimSpace(*talkID) == "" {
+		return fmt.Errorf("conference and talk-id are required")
+	}
+	token, err := btcppclient.TokenFromFile(*tokenFile)
+	if err != nil {
+		return err
+	}
+	update := btcppclient.RecordingUpdate{}
+	if fsHasFlag(fs, "file-uri") {
+		update.FileURI = fileURI
+	}
+	if fsHasFlag(fs, "youtube-url") {
+		update.YouTubeURL = youtubeURL
+	}
+	if fsHasFlag(fs, "x-url") {
+		update.XURL = xURL
+	}
+	if fsHasFlag(fs, "x-reply-url") {
+		update.XReplyURL = xReplyURL
+	}
+	if fsHasFlag(fs, "published-at") {
+		update.PublishedAt = publishedAt
+	}
+	client := &btcppclient.Client{BaseURL: *baseURL, Token: token}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	recording, err := client.PutRecording(ctx, *conference, *talkID, update)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(recording)
+}
+
+func fsHasFlag(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(flag *flag.Flag) {
+		if flag.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 func runNostrPublish(args []string) error {
