@@ -1209,6 +1209,14 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 
 func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string) (string, string, error) {
 	unitName := gpuTranscodeUnitName(rawPath)
+	remote := remoteGPUTranscodeCommand(unitName, command, rawPath)
+	args := sshArgs(host, remote)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	out, err := cmd.CombinedOutput()
+	return unitName, string(out), err
+}
+
+func remoteGPUTranscodeCommand(unitName, command, rawPath string) string {
 	systemdRun := strings.Join([]string{
 		"systemd-run",
 		"--unit=" + shellQuote(unitName),
@@ -1221,13 +1229,18 @@ func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string)
 		shellQuote(command),
 		shellQuote(rawPath),
 	}, " ")
-	remote := strings.Join([]string{
+	return strings.Join([]string{
 		"unit=" + shellQuote(unitName),
 		"raw=" + shellQuote(rawPath),
 		"cmd=" + shellQuote(command),
 		"desc=" + shellQuote("streamctl GPU transcode "+rawPath),
-		"if command -v systemd-run >/dev/null 2>&1 && systemctl show-environment >/dev/null 2>&1; then exec " + systemdRun + "; fi",
-		"jobdir=/root/streamctl-gpu-jobs/$unit",
+		"if command -v systemd-run >/dev/null 2>&1 && systemctl show-environment >/dev/null 2>&1; then if systemctl is-active --quiet \"$unit\"; then printf '%s\\n' \"$unit\"; exit 0; fi; exec " + systemdRun + "; fi",
+		"jobsroot=${STREAMCTL_GPU_JOB_ROOT:-/root/streamctl-gpu-jobs}",
+		"mkdir -p \"$jobsroot\"",
+		"lockfile=$jobsroot/$unit.lock",
+		"exec 9>\"$lockfile\"",
+		"if ! flock -n 9; then printf '%s\\n' \"$unit\"; exit 0; fi",
+		"jobdir=$jobsroot/$unit",
 		"mkdir -p \"$jobdir\"",
 		"printf '%s\\n' \"$desc\" > \"$jobdir/description\"",
 		"printf '%s\\n' \"$raw\" > \"$jobdir/raw_path\"",
@@ -1239,10 +1252,6 @@ func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string)
 		"nohup env RCLONE_CONFIG=/root/rclone.conf STREAMCTL_JOBDIR=\"$jobdir\" bash -c 'set +e; \"$1\" \"$2\" >> \"$STREAMCTL_JOBDIR/journal\" 2>&1; rc=$?; if [ \"$rc\" -eq 0 ]; then printf \"inactive\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"exited\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"success\\n\" > \"$STREAMCTL_JOBDIR/result\"; else printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"exit-code\\n\" > \"$STREAMCTL_JOBDIR/result\"; fi; exit \"$rc\"' streamctl-gpu-job \"$cmd\" \"$raw\" >/dev/null 2>&1 & printf '%s\\n' \"$!\" > \"$jobdir/pid\"",
 		"printf '%s\\n' \"$unit\"",
 	}, "; ")
-	args := sshArgs(host, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	out, err := cmd.CombinedOutput()
-	return unitName, string(out), err
 }
 
 func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatusView {
@@ -1653,7 +1662,15 @@ func (h *Handler) reconcileStaleGPUQueue(worker gpuWorkerView, jobs []gpuJobView
 		if item.Status != "running" {
 			continue
 		}
-		if worker.Status == "active" && (activeRawPaths[item.RawPath] || activeUnits[item.UnitName]) {
+		workerUnavailable := managedGPUWorkerDefinitelyUnavailable(worker)
+		if !workerUnavailable && (activeRawPaths[item.RawPath] || activeUnits[item.UnitName]) {
+			continue
+		}
+		// A managed worker can temporarily report "starting" when an SSH probe
+		// times out even though its transcode is still running. Only requeue when
+		// the provider confirms that the worker is gone, or when an active worker
+		// confirms that the job itself is gone.
+		if worker.Managed && worker.Status != "active" && !workerUnavailable {
 			continue
 		}
 		if err := h.DB.RequeueRunningGPUJob(item.RawPath, fmt.Sprintf("requeued stale job because worker status was %q", worker.Status)); err != nil {
@@ -1680,6 +1697,18 @@ func (h *Handler) reconcileStaleGPUQueue(worker gpuWorkerView, jobs []gpuJobView
 		return queue
 	}
 	return refreshed
+}
+
+func managedGPUWorkerDefinitelyUnavailable(worker gpuWorkerView) bool {
+	if !worker.Managed {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(worker.Status)) {
+	case "inactive", "not found", "off", "archived", "exited", "terminated":
+		return true
+	default:
+		return false
+	}
 }
 
 func unprocessedLivestreamFiles(files []livestreamFileView) []livestreamFileView {
@@ -2397,7 +2426,7 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 		DockerStartCmd: []string{"bash", "-lc", strings.Join([]string{
 			"set -euo pipefail",
 			"apt-get update",
-			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates",
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates util-linux",
 			"mkdir -p /run/sshd /root/.ssh",
 			"printf '%s\n' \"$SSH_PUBLIC_KEY\" > /root/.ssh/authorized_keys",
 			"chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys",
@@ -2616,7 +2645,7 @@ func (h *Handler) gpuWorkerUserData() (string, error) {
 set -euxo pipefail
 DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg rclone curl
+DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg rclone curl util-linux
 install -d -m 0700 /root
 base64 -d >/root/rclone.conf <<'STREAMCTL_RCLONE'
 %s
