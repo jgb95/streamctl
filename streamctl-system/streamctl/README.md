@@ -35,9 +35,34 @@ This means scheduled streams keep running even if the web app is restarted or cr
 -unit-dir      directory for generated systemd units (default /etc/systemd/system)
 -unit-prefix   prefix for generated unit names (default "streamctl-")
 -run-user      user to run the ffmpeg processes as (default "streamctl")
+-btcpp-oauth-base                 Bitcoin++ OAuth server (default "https://btcpp.dev")
+-btcpp-oauth-client-id            confidential OAuth client ID
+-btcpp-oauth-client-secret-file   path to the OAuth client secret (mode 0400)
+-btcpp-oauth-redirect-url         callback URL (defaults from -public-base-url)
 ```
 
-`STREAMCTL_SECRET` env var is required; it's the login secret for the web UI.
+Interactive access uses Bitcoin++ OAuth and is restricted to accounts whose
+current roles include `global-admin`. streamctl rechecks that role at least
+every five minutes. `STREAMCTL_SECRET` may remain configured as emergency
+break-glass access; it is not required when OAuth is configured.
+
+Register streamctl as a confidential OAuth application at
+`https://btcpp.dev/dashboard/settings` with this exact callback:
+
+```text
+https://stream.btcpp.dev/oauth/callback
+```
+
+Grant only `identity:self:read` and `offline_access`. Save the generated client
+secret outside Git and the Nix store, for example:
+
+```bash
+install -m 0400 /dev/stdin /var/lib/streamctl/btcpp-oauth-client-secret
+```
+
+Then set `btcppOAuthClientID` and `btcppOAuthClientSecretFile` in the NixOS
+service configuration. Login sessions are stored server-side and all streamctl
+mutations require a per-session CSRF token.
 
 ## Running locally
 
@@ -62,6 +87,10 @@ install -m 0400 /dev/stdin /var/lib/streamctl/btcpp-api-token
 ```
 
 The token is read from that file and is never accepted as a CLI argument.
+This service credential is intentionally separate from interactive OAuth login:
+the PAT belongs to the streamctl automation, while OAuth sessions identify the
+human administrator operating the UI.
+
 Discover eligible talks and their recording-consent policy:
 
 ```bash

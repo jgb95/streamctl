@@ -14,6 +14,7 @@
 {{end}}
 
 <form method="post" action="/endpoints/create" style="margin-bottom: 24px;">
+	{{csrfField}}
 	<h3 style="margin-top: 0; font-size: 14px;">Add new endpoint</h3>
 	<div class="field">
 		<label>Name</label>
@@ -54,6 +55,7 @@
 		<tr>
 			<td>
 				<form method="post" action="/endpoints/update/{{.ID}}" id="ep-{{.ID}}" style="background: none; border: none; padding: 0; display: contents;">
+					{{csrfField}}
 					<input type="text" name="name" value="{{.Name}}" form="ep-{{.ID}}" style="background: var(--bg); border: 1px solid var(--border); padding: 4px 6px; color: var(--text); border-radius: 3px;">
 				</form>
 			</td>
@@ -78,10 +80,12 @@
 					<button type="submit" class="btn" form="ep-{{.ID}}">Save</button>
 					{{if eq .Type "rtmp"}}
 					<form method="post" action="/endpoints/test/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Send an 8-second test pattern to {{.Name}}? It will appear briefly on your live destination.');">
+						{{csrfField}}
 						<button type="submit" class="btn">Test</button>
 					</form>
 					{{end}}
 					<form method="post" action="/endpoints/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this endpoint? Streams using it will be updated.');">
+						{{csrfField}}
 						<button type="submit" class="btn btn-danger">Delete</button>
 					</form>
 				</div>

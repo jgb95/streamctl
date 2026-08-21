@@ -5,6 +5,7 @@
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
 
 <form method="post" action="{{.FormAction}}">
+	{{csrfField}}
 	<div class="field">
 		<label>Name</label>
 		<input type="text" name="name" value="{{if .Stream}}{{.Stream.Name}}{{end}}" required>

@@ -63,6 +63,10 @@
     notificationEmail = "hello@btcpp.dev";
     cleanupCache = true;
     publicBaseURL = "https://stream.btcpp.dev";
+    # After registering the confidential client at btcpp.dev/dashboard/settings:
+    # btcppOAuthClientID = "...";
+    # btcppOAuthClientSecretFile = "/var/lib/streamctl/btcpp-oauth-client-secret";
+    btcppOAuthRedirectURL = "https://stream.btcpp.dev/oauth/callback";
     digitalOceanTokenFile = "/var/lib/streamctl/digitalocean-token";
     runpodTokenFile = "/var/lib/streamctl/runpod-token";
     gpuDestroyAfterJob = true;

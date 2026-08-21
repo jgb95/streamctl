@@ -104,6 +104,30 @@ CREATE TABLE IF NOT EXISTS gpu_job_queue (
 	started_at DATETIME,
 	finished_at DATETIME
 );
+
+CREATE TABLE IF NOT EXISTS oauth_login_states (
+	state_hash BLOB PRIMARY KEY,
+	code_verifier TEXT NOT NULL,
+	expires_at INTEGER NOT NULL,
+	created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+	session_hash BLOB PRIMARY KEY,
+	person_id TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	access_token TEXT NOT NULL,
+	refresh_token TEXT NOT NULL,
+	access_expires_at INTEGER NOT NULL,
+	role_checked_at INTEGER NOT NULL,
+	csrf_token TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL,
+	last_seen_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS auth_sessions_expires_at_idx ON auth_sessions (expires_at);
+CREATE INDEX IF NOT EXISTS oauth_login_states_expires_at_idx ON oauth_login_states (expires_at);
 `
 
 func (db *DB) Migrate() error {

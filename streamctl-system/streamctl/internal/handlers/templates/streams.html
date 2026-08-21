@@ -66,16 +66,19 @@
 				<div class="actions">
 					{{if eq .Status "active"}}
 					<form method="post" action="/streams/stop/{{.ID}}" style="background: none; border: none; padding: 0;">
+						{{csrfField}}
 						<button type="submit" class="btn btn-danger">Stop</button>
 					</form>
 					{{else}}
 					<form method="post" action="/streams/start/{{.ID}}" style="background: none; border: none; padding: 0;">
+						{{csrfField}}
 						<button type="submit" class="btn">Start now</button>
 					</form>
 					{{end}}
 					<a href="/streams/logs/{{.ID}}" class="btn">Logs</a>
 					<a href="/streams/edit/{{.ID}}" class="btn">Edit</a>
 					<form method="post" action="/streams/delete/{{.ID}}" style="background: none; border: none; padding: 0;" onsubmit="return confirm('Delete this stream?');">
+						{{csrfField}}
 						<button type="submit" class="btn btn-danger">Delete</button>
 					</form>
 				</div>

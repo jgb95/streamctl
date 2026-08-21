@@ -78,6 +78,30 @@
               description = "Public HTTPS base URL used for HLS links in Nostr live events.";
             };
 
+            btcppOAuthBaseURL = lib.mkOption {
+              type = lib.types.str;
+              default = "https://btcpp.dev";
+              description = "Bitcoin++ OAuth authorization server base URL.";
+            };
+
+            btcppOAuthClientID = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Registered confidential OAuth client ID for interactive streamctl login.";
+            };
+
+            btcppOAuthClientSecretFile = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Root-readable 0400 file containing the Bitcoin++ OAuth client secret.";
+            };
+
+            btcppOAuthRedirectURL = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Registered OAuth callback URL. Empty derives it from publicBaseURL.";
+            };
+
             gpuWorkerHost = lib.mkOption {
               type = lib.types.str;
               default = "";
@@ -242,6 +266,13 @@
           };
 
           config = lib.mkIf cfg.enable {
+            assertions = [
+              {
+                assertion = (cfg.btcppOAuthClientID == "") == (cfg.btcppOAuthClientSecretFile == "");
+                message = "services.streamctl.btcppOAuthClientID and btcppOAuthClientSecretFile must be configured together";
+              }
+            ];
+
             users.users.${cfg.user} = {
               isSystemUser = true;
               group = cfg.group;
@@ -283,6 +314,10 @@
                     -hls-dir=${cfg.hlsDir} \
                     -nostr-key-dir=${cfg.nostrKeyDir} \
                     -public-base-url=${cfg.publicBaseURL} \
+                    ${lib.optionalString (cfg.btcppOAuthClientID != "") "-btcpp-oauth-base=${lib.escapeShellArg cfg.btcppOAuthBaseURL} \\"}
+                    ${lib.optionalString (cfg.btcppOAuthClientID != "") "-btcpp-oauth-client-id=${lib.escapeShellArg cfg.btcppOAuthClientID} \\"}
+                    ${lib.optionalString (cfg.btcppOAuthClientID != "") "-btcpp-oauth-client-secret-file=${lib.escapeShellArg cfg.btcppOAuthClientSecretFile} \\"}
+                    ${lib.optionalString (cfg.btcppOAuthRedirectURL != "") "-btcpp-oauth-redirect-url=${lib.escapeShellArg cfg.btcppOAuthRedirectURL} \\"}
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
                     -gpu-worker-command=${cfg.gpuWorkerCommand} \
                     -do-token-file=${cfg.digitalOceanTokenFile} \

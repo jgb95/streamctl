@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/base64"
@@ -14,6 +13,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"streamctl/internal/btcppoauth"
 	"streamctl/internal/db"
 	"streamctl/internal/doclient"
 	"streamctl/internal/nostrpub"
@@ -66,6 +67,7 @@ type Handler struct {
 	GPUWorkerUser      string
 	GPUDestroyAfterJob bool
 	Systemd            *systemd.Manager
+	OAuth              *btcppoauth.Client
 
 	funcs      template.FuncMap
 	gpuQueueMu sync.Mutex
@@ -85,93 +87,46 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 
 	mux.HandleFunc("/login", h.login)
-	mux.HandleFunc("/logout", h.logout)
+	mux.HandleFunc("/oauth/start", h.oauthStart)
+	mux.HandleFunc("/oauth/callback", h.oauthCallback)
+	mux.Handle("/logout", h.mutation(http.HandlerFunc(h.logout)))
 	mux.Handle("/live/", http.StripPrefix("/live/", http.HandlerFunc(h.liveFile)))
 
 	mux.Handle("/", h.auth(http.HandlerFunc(h.index)))
 	mux.Handle("/streams/new", h.auth(http.HandlerFunc(h.streamNew)))
-	mux.Handle("/streams/create", h.auth(http.HandlerFunc(h.streamCreate)))
+	mux.Handle("/streams/create", h.mutation(http.HandlerFunc(h.streamCreate)))
 	mux.Handle("/streams/edit/", h.auth(http.HandlerFunc(h.streamEdit)))
-	mux.Handle("/streams/update/", h.auth(http.HandlerFunc(h.streamUpdate)))
-	mux.Handle("/streams/delete/", h.auth(http.HandlerFunc(h.streamDelete)))
-	mux.Handle("/streams/start/", h.auth(http.HandlerFunc(h.streamStart)))
-	mux.Handle("/streams/stop/", h.auth(http.HandlerFunc(h.streamStop)))
+	mux.Handle("/streams/update/", h.mutation(http.HandlerFunc(h.streamUpdate)))
+	mux.Handle("/streams/delete/", h.mutation(http.HandlerFunc(h.streamDelete)))
+	mux.Handle("/streams/start/", h.mutation(http.HandlerFunc(h.streamStart)))
+	mux.Handle("/streams/stop/", h.mutation(http.HandlerFunc(h.streamStop)))
 	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
 	mux.Handle("/streams/preview/", h.auth(http.HandlerFunc(h.streamPreview)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
 	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(h.livestreamFiles)))
-	mux.Handle("/livestream-files/process", h.auth(http.HandlerFunc(h.livestreamFileProcess)))
-	mux.Handle("/livestream-files/process-selected", h.auth(http.HandlerFunc(h.livestreamFilesProcessSelected)))
-	mux.Handle("/livestream-files/requeue", h.auth(http.HandlerFunc(h.livestreamFileRequeue)))
-	mux.Handle("/livestream-files/requeue-stale", h.auth(http.HandlerFunc(h.livestreamFilesRequeueStale)))
-	mux.Handle("/livestream-files/clear-resolved-failures", h.auth(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
-	mux.Handle("/gpu-worker/create", h.auth(http.HandlerFunc(h.gpuWorkerCreate)))
-	mux.Handle("/gpu-worker/destroy", h.auth(http.HandlerFunc(h.gpuWorkerDestroy)))
+	mux.Handle("/livestream-files/process", h.mutation(http.HandlerFunc(h.livestreamFileProcess)))
+	mux.Handle("/livestream-files/process-selected", h.mutation(http.HandlerFunc(h.livestreamFilesProcessSelected)))
+	mux.Handle("/livestream-files/requeue", h.mutation(http.HandlerFunc(h.livestreamFileRequeue)))
+	mux.Handle("/livestream-files/requeue-stale", h.mutation(http.HandlerFunc(h.livestreamFilesRequeueStale)))
+	mux.Handle("/livestream-files/clear-resolved-failures", h.mutation(http.HandlerFunc(h.livestreamFilesClearResolvedFailures)))
+	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
+	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
 
 	mux.Handle("/endpoints", h.auth(http.HandlerFunc(h.endpoints)))
-	mux.Handle("/endpoints/create", h.auth(http.HandlerFunc(h.endpointCreate)))
-	mux.Handle("/endpoints/update/", h.auth(http.HandlerFunc(h.endpointUpdate)))
-	mux.Handle("/endpoints/delete/", h.auth(http.HandlerFunc(h.endpointDelete)))
-	mux.Handle("/endpoints/test/", h.auth(http.HandlerFunc(h.endpointTest)))
+	mux.Handle("/endpoints/create", h.mutation(http.HandlerFunc(h.endpointCreate)))
+	mux.Handle("/endpoints/update/", h.mutation(http.HandlerFunc(h.endpointUpdate)))
+	mux.Handle("/endpoints/delete/", h.mutation(http.HandlerFunc(h.endpointDelete)))
+	mux.Handle("/endpoints/test/", h.mutation(http.HandlerFunc(h.endpointTest)))
 
 	mux.Handle("/nostr", h.auth(http.HandlerFunc(h.nostr)))
-	mux.Handle("/nostr/keys/create", h.auth(http.HandlerFunc(h.nostrKeyCreate)))
-	mux.Handle("/nostr/keys/update/", h.auth(http.HandlerFunc(h.nostrKeyUpdate)))
-	mux.Handle("/nostr/keys/delete/", h.auth(http.HandlerFunc(h.nostrKeyDelete)))
-	mux.Handle("/nostr/relays/create", h.auth(http.HandlerFunc(h.nostrRelayCreate)))
-	mux.Handle("/nostr/relays/update/", h.auth(http.HandlerFunc(h.nostrRelayUpdate)))
-	mux.Handle("/nostr/relays/delete/", h.auth(http.HandlerFunc(h.nostrRelayDelete)))
+	mux.Handle("/nostr/keys/create", h.mutation(http.HandlerFunc(h.nostrKeyCreate)))
+	mux.Handle("/nostr/keys/update/", h.mutation(http.HandlerFunc(h.nostrKeyUpdate)))
+	mux.Handle("/nostr/keys/delete/", h.mutation(http.HandlerFunc(h.nostrKeyDelete)))
+	mux.Handle("/nostr/relays/create", h.mutation(http.HandlerFunc(h.nostrRelayCreate)))
+	mux.Handle("/nostr/relays/update/", h.mutation(http.HandlerFunc(h.nostrRelayUpdate)))
+	mux.Handle("/nostr/relays/delete/", h.mutation(http.HandlerFunc(h.nostrRelayDelete)))
 	go h.gpuQueueDispatcher()
-}
-
-// ---------- auth ----------
-
-const cookieName = "streamctl_session"
-
-func (h *Handler) auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(cookieName)
-		if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(h.Secret)) != 1 {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		h.render(w, "login.html", nil)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if subtle.ConstantTimeCompare([]byte(r.FormValue("secret")), []byte(h.Secret)) != 1 {
-		h.render(w, "login.html", map[string]any{"Error": "incorrect secret"})
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    h.Secret,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   60 * 60 * 24 * 30,
-	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:   cookieName,
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
-	})
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 // liveFile serves generated HLS playlists and segments publicly. Nostr live
@@ -227,11 +182,11 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 			LiveURL:         fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID),
 		}
 	}
-	h.render(w, "streams.html", map[string]any{"Streams": views})
+	h.render(w, r, "streams.html", map[string]any{"Streams": views})
 }
 
 func (h *Handler) streamNew(w http.ResponseWriter, r *http.Request) {
-	if err := h.renderStreamForm(w, http.StatusOK, "New stream", "/streams/create", nil, nil, "", ""); err != nil {
+	if err := h.renderStreamForm(w, r, http.StatusOK, "New stream", "/streams/create", nil, nil, "", ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -244,7 +199,7 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 	s, ids, videos, err := h.streamFromForm(r)
 	if err != nil {
 		draft := h.streamDraftFromForm(r)
-		if renderErr := h.renderStreamForm(w, http.StatusBadRequest, "New stream", "/streams/create", draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
+		if renderErr := h.renderStreamForm(w, r, http.StatusBadRequest, "New stream", "/streams/create", draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -252,7 +207,7 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 	id, err := h.DB.CreateStream(s, ids, videos)
 	if err != nil {
 		s.Videos = videos
-		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "New stream", "/streams/create", s, ids, s.ScheduleType, err.Error()); renderErr != nil {
+		if renderErr := h.renderStreamForm(w, r, http.StatusInternalServerError, "New stream", "/streams/create", s, ids, s.ScheduleType, err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -263,7 +218,7 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Systemd.Sync(created); err != nil {
-		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", created.ID), created, endpointIDs(created.Endpoints), created.ScheduleType, "stream saved but systemd sync failed: "+err.Error()); renderErr != nil {
+		if renderErr := h.renderStreamForm(w, r, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", created.ID), created, endpointIDs(created.Endpoints), created.ScheduleType, "stream saved but systemd sync failed: "+err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -286,7 +241,7 @@ func (h *Handler) streamEdit(w http.ResponseWriter, r *http.Request) {
 	for i, e := range s.Endpoints {
 		selected[i] = e.ID
 	}
-	if err := h.renderStreamForm(w, http.StatusOK, "Edit stream", fmt.Sprintf("/streams/update/%d", s.ID), s, selected, s.ScheduleType, ""); err != nil {
+	if err := h.renderStreamForm(w, r, http.StatusOK, "Edit stream", fmt.Sprintf("/streams/update/%d", s.ID), s, selected, s.ScheduleType, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -305,7 +260,7 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		draft := h.streamDraftFromForm(r)
 		draft.ID = id
-		if renderErr := h.renderStreamForm(w, http.StatusBadRequest, "Edit stream", fmt.Sprintf("/streams/update/%d", id), draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
+		if renderErr := h.renderStreamForm(w, r, http.StatusBadRequest, "Edit stream", fmt.Sprintf("/streams/update/%d", id), draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -313,7 +268,7 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 	s.ID = id
 	if err := h.DB.UpdateStream(s, ids, videos); err != nil {
 		s.Videos = videos
-		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", id), s, ids, s.ScheduleType, err.Error()); renderErr != nil {
+		if renderErr := h.renderStreamForm(w, r, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", id), s, ids, s.ScheduleType, err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -324,7 +279,7 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Systemd.Sync(updated); err != nil {
-		if renderErr := h.renderStreamForm(w, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", id), updated, endpointIDs(updated.Endpoints), updated.ScheduleType, "stream saved but systemd sync failed: "+err.Error()); renderErr != nil {
+		if renderErr := h.renderStreamForm(w, r, http.StatusInternalServerError, "Edit stream", fmt.Sprintf("/streams/update/%d", id), updated, endpointIDs(updated.Endpoints), updated.ScheduleType, "stream saved but systemd sync failed: "+err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -400,7 +355,7 @@ func (h *Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	h.render(w, "stream_logs.html", map[string]any{
+	h.render(w, r, "stream_logs.html", map[string]any{
 		"Stream": s,
 		"Units":  h.Systemd.Logs(id),
 	})
@@ -425,7 +380,7 @@ func (h *Handler) streamPreview(w http.ResponseWriter, r *http.Request) {
 		playlistReady = true
 		playlistUpdated = info.ModTime().Format("2006-01-02 15:04:05")
 	}
-	h.render(w, "stream_preview.html", map[string]any{
+	h.render(w, r, "stream_preview.html", map[string]any{
 		"Stream":          s,
 		"LiveURL":         liveURL,
 		"PlaylistReady":   playlistReady,
@@ -433,7 +388,7 @@ func (h *Handler) streamPreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) renderStreamForm(w http.ResponseWriter, status int, title, action string, s *db.Stream, selected []int64, defaultSchedule, errorMessage string) error {
+func (h *Handler) renderStreamForm(w http.ResponseWriter, r *http.Request, status int, title, action string, s *db.Stream, selected []int64, defaultSchedule, errorMessage string) error {
 	files, err := h.listVideos()
 	if err != nil {
 		return err
@@ -458,7 +413,7 @@ func (h *Handler) renderStreamForm(w http.ResponseWriter, status int, title, act
 			defaultSchedule = s.ScheduleType
 		}
 	}
-	h.renderStatus(w, status, "stream_form.html", map[string]any{
+	h.renderStatus(w, r, status, "stream_form.html", map[string]any{
 		"Stream":          s,
 		"Videos":          files,
 		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
@@ -674,7 +629,7 @@ func (h *Handler) endpoints(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	testID, _ := strconv.ParseInt(q.Get("id"), 10, 64)
-	h.render(w, "endpoints.html", map[string]any{
+	h.render(w, r, "endpoints.html", map[string]any{
 		"Endpoints":  eps,
 		"TestResult": q.Get("test"),
 		"TestID":     testID,
@@ -978,7 +933,7 @@ func (h *Handler) livestreamFiles(w http.ResponseWriter, r *http.Request) {
 	queuedCount, runningCount := countGPUQueueStates(openQueue)
 	files = unprocessedLivestreamFiles(files)
 	gpuAvailability := h.gpuAvailability(r.Context())
-	h.render(w, "livestream_files.html", map[string]any{
+	h.render(w, r, "livestream_files.html", map[string]any{
 		"Files":            files,
 		"GPUConfigured":    worker.Configured,
 		"GPUWorkerHost":    h.GPUWorkerHost,
@@ -1184,7 +1139,7 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 	host, err := h.gpuWorkerSSHHost(r.Context())
 	if err != nil {
 		if cached, dbErr := h.DB.GetGPUJobLog(unit); dbErr == nil {
-			h.render(w, "gpu_job_logs.html", map[string]any{
+			h.render(w, r, "gpu_job_logs.html", map[string]any{
 				"Job":  gpuJobViewFromDB(*cached),
 				"Host": cached.Host,
 			})
@@ -1201,7 +1156,7 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 			job = gpuJobViewFromDB(*cached)
 		}
 	}
-	h.render(w, "gpu_job_logs.html", map[string]any{
+	h.render(w, r, "gpu_job_logs.html", map[string]any{
 		"Job":  job,
 		"Host": host,
 	})
@@ -2921,7 +2876,7 @@ func (h *Handler) nostr(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.render(w, "nostr.html", map[string]any{
+	h.render(w, r, "nostr.html", map[string]any{
 		"Keys":   keys,
 		"Relays": relays,
 		"Error":  r.URL.Query().Get("err"),
@@ -3501,17 +3456,25 @@ func (h *Handler) listVideos() ([]string, error) {
 	return out, nil
 }
 
-func (h *Handler) render(w http.ResponseWriter, name string, data any) {
-	h.renderStatus(w, http.StatusOK, name, data)
+func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, data any) {
+	h.renderStatus(w, r, http.StatusOK, name, data)
 }
 
-func (h *Handler) renderStatus(w http.ResponseWriter, status int, name string, data any) {
+func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status int, name string, data any) {
 	tmpls, err := fs.Sub(templateFS, "templates")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	tmpl, err := template.New("").Funcs(h.funcs).ParseFS(tmpls, "layout.html", name)
+	funcs := maps.Clone(h.funcs)
+	funcs["csrfField"] = func() template.HTML { return csrfField(r) }
+	funcs["currentUser"] = func() string {
+		if principal := requestAuthentication(r); principal != nil {
+			return principal.DisplayName
+		}
+		return ""
+	}
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

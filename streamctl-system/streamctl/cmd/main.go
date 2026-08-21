@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"streamctl/internal/btcppclient"
+	"streamctl/internal/btcppoauth"
 	"streamctl/internal/db"
 	"streamctl/internal/handlers"
 	"streamctl/internal/nostrpub"
@@ -54,6 +55,10 @@ func main() {
 		audioBitrate       = flag.String("normalize-audio-bitrate", "160k", "audio bitrate for normalized prefetched clips")
 		nostrKeyDir        = flag.String("nostr-key-dir", "/var/lib/streamctl/nostr-keys", "directory for stored Nostr private keys")
 		publicBaseURL      = flag.String("public-base-url", "", "public base URL used in Nostr live events, e.g. https://stream.example.com")
+		btcppOAuthBase     = flag.String("btcpp-oauth-base", "https://btcpp.dev", "Bitcoin++ OAuth server base URL")
+		btcppOAuthClientID = flag.String("btcpp-oauth-client-id", "", "registered Bitcoin++ OAuth client ID")
+		btcppOAuthSecret   = flag.String("btcpp-oauth-client-secret-file", "", "path to a private Bitcoin++ OAuth client secret file")
+		btcppOAuthRedirect = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
 		gpuWorkerHost      = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerCommand   = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		doTokenFile        = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
@@ -75,9 +80,30 @@ func main() {
 	)
 	flag.Parse()
 
-	secret := os.Getenv("STREAMCTL_SECRET")
-	if secret == "" {
-		log.Fatal("STREAMCTL_SECRET environment variable must be set")
+	secret := strings.TrimSpace(os.Getenv("STREAMCTL_SECRET"))
+	var oauthClient *btcppoauth.Client
+	if strings.TrimSpace(*btcppOAuthClientID) != "" || strings.TrimSpace(*btcppOAuthSecret) != "" {
+		if strings.TrimSpace(*btcppOAuthClientID) == "" || strings.TrimSpace(*btcppOAuthSecret) == "" {
+			log.Fatal("both -btcpp-oauth-client-id and -btcpp-oauth-client-secret-file are required")
+		}
+		clientSecret, err := btcppoauth.SecretFromFile(*btcppOAuthSecret)
+		if err != nil {
+			log.Fatal(err)
+		}
+		redirectURL := strings.TrimSpace(*btcppOAuthRedirect)
+		if redirectURL == "" && strings.TrimSpace(*publicBaseURL) != "" {
+			redirectURL = strings.TrimRight(strings.TrimSpace(*publicBaseURL), "/") + "/oauth/callback"
+		}
+		oauthClient = &btcppoauth.Client{
+			BaseURL: *btcppOAuthBase, ClientID: *btcppOAuthClientID,
+			ClientSecret: clientSecret, RedirectURL: redirectURL,
+		}
+		if err := oauthClient.Validate(); err != nil {
+			log.Fatalf("configure Bitcoin++ OAuth: %v", err)
+		}
+	}
+	if secret == "" && oauthClient == nil {
+		log.Fatal("configure Bitcoin++ OAuth or set STREAMCTL_SECRET for break-glass access")
 	}
 
 	database, err := db.Open(*dbPath)
@@ -147,6 +173,7 @@ func main() {
 		GPUWorkerUser:      strings.TrimSpace(*gpuWorkerUser),
 		GPUDestroyAfterJob: *gpuDestroyAfterJob,
 		Systemd:            sysd,
+		OAuth:              oauthClient,
 	}
 
 	mux := http.NewServeMux()

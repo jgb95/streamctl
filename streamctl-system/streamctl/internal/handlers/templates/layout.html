@@ -38,7 +38,7 @@ header nav a {
 	margin-right: 16px;
 }
 header nav a:hover { color: var(--text); }
-header .right { margin-left: auto; }
+header .right { margin-left: auto; display: flex; align-items: center; gap: 12px; color: var(--muted); }
 main { max-width: 1320px; margin: 24px auto; padding: 0 16px; }
 h2 { font-size: 18px; margin: 24px 0 12px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
@@ -157,7 +157,11 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 		<a href="/nostr">Nostr</a>
 	</nav>
 	<div class="right">
-		<a href="/logout" class="btn">Log out</a>
+		{{if currentUser}}<span>{{currentUser}}</span>{{end}}
+		<form method="post" action="/logout" style="background: none; border: 0; padding: 0; margin: 0;">
+			{{csrfField}}
+			<button type="submit" class="btn">Log out</button>
+		</form>
 	</div>
 </header>
 <main>
