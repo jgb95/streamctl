@@ -50,6 +50,7 @@
     listen = "127.0.0.1:8080";
     secretFile = "/var/lib/streamctl/secret";
     # videoDir defaults to /var/lib/streamctl/videos — that's where you scp event files.
+
   };
 
   # ---------- reverse proxy + TLS ----------

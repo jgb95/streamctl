@@ -60,12 +60,12 @@
     # Configure these once rclone has a Spaces remote.
     remote = "spaces:btcpp";
     rcloneConfigFile = "/var/lib/streamctl/rclone.conf";
-    notificationEmail = "hello@btcpp.dev";
+    notificationEmail = "inbox@btcpp.dev";
     cleanupCache = true;
     publicBaseURL = "https://stream.btcpp.dev";
-    # After registering the confidential client at btcpp.dev/dashboard/settings:
-    # btcppOAuthClientID = "...";
-    # btcppOAuthClientSecretFile = "/var/lib/streamctl/btcpp-oauth-client-secret";
+
+    btcppOAuthClientID = "btcpp_client_CxsrZn-911KA_MRwhzwkUvHK";
+    btcppOAuthClientSecretFile = "/var/lib/streamctl/btcpp-oauth-client-secret";
     btcppOAuthRedirectURL = "https://stream.btcpp.dev/oauth/callback";
     digitalOceanTokenFile = "/var/lib/streamctl/digitalocean-token";
     runpodTokenFile = "/var/lib/streamctl/runpod-token";
