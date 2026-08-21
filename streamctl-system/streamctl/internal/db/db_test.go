@@ -6,6 +6,31 @@ import (
 	"testing"
 )
 
+func TestStreamPersistsBTCPPRecordingID(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	id, err := database.CreateStream(&Stream{
+		Name: "A talk", ScheduleType: "once", OnCalendar: "2026-08-22 10:00:00 UTC",
+		BTCPPRecordingID: "recording-1", Enabled: true,
+	}, nil, []string{"talk.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := database.GetStream(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.BTCPPRecordingID != "recording-1" {
+		t.Fatalf("BTCPPRecordingID=%q", stream.BTCPPRecordingID)
+	}
+}
+
 func TestGPUQueueTracksAttemptsAndErrors(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
 	if err != nil {

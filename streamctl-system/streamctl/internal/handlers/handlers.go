@@ -442,15 +442,16 @@ func (h *Handler) streamDraftFromForm(r *http.Request) *db.Stream {
 		scheduleType = "once"
 	}
 	return &db.Stream{
-		Name:         strings.TrimSpace(r.FormValue("name")),
-		Videos:       videos,
-		ScheduleType: scheduleType,
-		OnCalendar:   strings.TrimSpace(r.FormValue("on_calendar")),
-		NostrEnabled: r.FormValue("nostr_enabled") == "on",
-		NostrKeyID:   parseOptionalInt64(r.FormValue("nostr_key_id")),
-		NostrTitle:   strings.TrimSpace(r.FormValue("nostr_title")),
-		NostrSummary: strings.TrimSpace(r.FormValue("nostr_summary")),
-		Enabled:      r.FormValue("enabled") == "on",
+		Name:             strings.TrimSpace(r.FormValue("name")),
+		Videos:           videos,
+		ScheduleType:     scheduleType,
+		OnCalendar:       strings.TrimSpace(r.FormValue("on_calendar")),
+		NostrEnabled:     r.FormValue("nostr_enabled") == "on",
+		NostrKeyID:       parseOptionalInt64(r.FormValue("nostr_key_id")),
+		NostrTitle:       strings.TrimSpace(r.FormValue("nostr_title")),
+		NostrSummary:     strings.TrimSpace(r.FormValue("nostr_summary")),
+		BTCPPRecordingID: strings.TrimSpace(r.FormValue("btcpp_recording_id")),
+		Enabled:          r.FormValue("enabled") == "on",
 	}
 }
 
@@ -594,14 +595,15 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 	}
 
 	s := &db.Stream{
-		Name:         name,
-		ScheduleType: scheduleType,
-		OnCalendar:   onCalendar,
-		NostrEnabled: r.FormValue("nostr_enabled") == "on",
-		NostrKeyID:   parseOptionalInt64(r.FormValue("nostr_key_id")),
-		NostrTitle:   strings.TrimSpace(r.FormValue("nostr_title")),
-		NostrSummary: strings.TrimSpace(r.FormValue("nostr_summary")),
-		Enabled:      r.FormValue("enabled") == "on",
+		Name:             name,
+		ScheduleType:     scheduleType,
+		OnCalendar:       onCalendar,
+		NostrEnabled:     r.FormValue("nostr_enabled") == "on",
+		NostrKeyID:       parseOptionalInt64(r.FormValue("nostr_key_id")),
+		NostrTitle:       strings.TrimSpace(r.FormValue("nostr_title")),
+		NostrSummary:     strings.TrimSpace(r.FormValue("nostr_summary")),
+		BTCPPRecordingID: strings.TrimSpace(r.FormValue("btcpp_recording_id")),
+		Enabled:          r.FormValue("enabled") == "on",
 	}
 	if s.NostrEnabled {
 		if s.NostrKeyID == 0 {

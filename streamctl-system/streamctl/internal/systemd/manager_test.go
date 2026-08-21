@@ -58,3 +58,22 @@ func TestPrefetchScriptPrefersPreprocessedNormalizedObject(t *testing.T) {
 		}
 	}
 }
+
+func TestRunScriptReportsBTCPPBroadcastLifecycle(t *testing.T) {
+	m := &Manager{
+		HLSDir: "/var/lib/streamctl/hls", PublicBaseURL: "https://stream.btcpp.dev",
+		BTCPPAPIBase: "https://btcpp.dev", BTCPPTokenFile: "/var/lib/streamctl/btcpp-api-token",
+		SelfPath: "/run/current-system/sw/bin/cmd",
+	}
+	stream := &db.Stream{ID: 7, Name: "A talk", Videos: []string{"talk.mp4"}, BTCPPRecordingID: "recording-1"}
+	script := m.renderRunScript(stream)
+	for _, want := range []string{
+		"btcpp-broadcast", "-recording-id 'recording-1'", "-state 'live'",
+		"sleep 45", "-state 'ended'", "-state 'failed'",
+		"https://stream.btcpp.dev/live/stream-7/index.m3u8",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("run script missing %q\n%s", want, script)
+		}
+	}
+}

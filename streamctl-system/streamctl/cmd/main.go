@@ -32,6 +32,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "btcpp-broadcast" {
+		if err := runBTCPPBroadcast(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "nostr-publish" {
 		if err := runNostrPublish(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -59,6 +65,8 @@ func main() {
 		btcppOAuthClientID = flag.String("btcpp-oauth-client-id", "", "registered Bitcoin++ OAuth client ID")
 		btcppOAuthSecret   = flag.String("btcpp-oauth-client-secret-file", "", "path to a private Bitcoin++ OAuth client secret file")
 		btcppOAuthRedirect = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
+		btcppAPIBase       = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used for broadcast status")
+		btcppAPITokenFile  = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token used for broadcast status")
 		gpuWorkerHost      = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerCommand   = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		doTokenFile        = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
@@ -117,23 +125,25 @@ func main() {
 	}
 
 	sysd := &systemd.Manager{
-		UnitDir:       *unitDir,
-		UnitPrefix:    *unitPrefix,
-		RunUser:       *runUser,
-		VideoDir:      *videoDir,
-		CacheDir:      *cacheDir,
-		HLSDir:        *hlsDir,
-		Remote:        *remote,
-		RcloneConfig:  *rcloneCfg,
-		NotifyEmail:   *notifyEmail,
-		SendmailPath:  *sendmailPath,
-		CleanupCache:  *cleanupCache,
-		Normalize:     *normalize,
-		VideoBitrate:  *videoBitrate,
-		AudioBitrate:  *audioBitrate,
-		NostrKeyDir:   *nostrKeyDir,
-		PublicBaseURL: strings.TrimRight(*publicBaseURL, "/"),
-		SelfPath:      os.Args[0],
+		UnitDir:        *unitDir,
+		UnitPrefix:     *unitPrefix,
+		RunUser:        *runUser,
+		VideoDir:       *videoDir,
+		CacheDir:       *cacheDir,
+		HLSDir:         *hlsDir,
+		Remote:         *remote,
+		RcloneConfig:   *rcloneCfg,
+		NotifyEmail:    *notifyEmail,
+		SendmailPath:   *sendmailPath,
+		CleanupCache:   *cleanupCache,
+		Normalize:      *normalize,
+		VideoBitrate:   *videoBitrate,
+		AudioBitrate:   *audioBitrate,
+		NostrKeyDir:    *nostrKeyDir,
+		PublicBaseURL:  strings.TrimRight(*publicBaseURL, "/"),
+		SelfPath:       os.Args[0],
+		BTCPPAPIBase:   strings.TrimRight(*btcppAPIBase, "/"),
+		BTCPPTokenFile: strings.TrimSpace(*btcppAPITokenFile),
 	}
 
 	streams, err := database.ListStreams()
@@ -259,6 +269,35 @@ func runBTCPPRecording(args []string) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(recording)
+}
+
+func runBTCPPBroadcast(args []string) error {
+	fs := flag.NewFlagSet("btcpp-broadcast", flag.ContinueOnError)
+	baseURL, tokenFile := btcppCommandClient(fs)
+	recordingID := fs.String("recording-id", "", "Bitcoin++ recording UUID")
+	state := fs.String("state", "", "scheduled, live, ended, or failed")
+	hlsURL := fs.String("hls-url", "", "public HLS playlist URL")
+	xBroadcastURL := fs.String("x-broadcast-url", "", "optional X broadcast URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*recordingID) == "" || strings.TrimSpace(*state) == "" {
+		return fmt.Errorf("recording-id and state are required")
+	}
+	token, err := btcppclient.TokenFromFile(*tokenFile)
+	if err != nil {
+		return err
+	}
+	client := &btcppclient.Client{BaseURL: *baseURL, Token: token}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	broadcast, err := client.PutBroadcast(ctx, *recordingID, btcppclient.BroadcastUpdate{
+		State: *state, HLSURL: *hlsURL, XBroadcastURL: *xBroadcastURL,
+	})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(broadcast)
 }
 
 func fsHasFlag(fs *flag.FlagSet, name string) bool {

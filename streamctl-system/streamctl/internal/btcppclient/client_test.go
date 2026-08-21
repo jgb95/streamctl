@@ -46,3 +46,27 @@ func TestTokenFileRejectsBroadPermissions(t *testing.T) {
 		t.Fatalf("token=%q err=%v", token, err)
 	}
 }
+
+func TestClientUpdatesBroadcastHeartbeat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/recordings/recording-1/broadcast" || r.Method != http.MethodPut {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var update BroadcastUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			t.Fatal(err)
+		}
+		if update.State != "live" || update.HLSURL != "https://stream.btcpp.dev/live/stream-7/index.m3u8" {
+			t.Fatalf("unexpected update: %#v", update)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"state": "live", "is_live": true}})
+	}))
+	defer server.Close()
+	client := &Client{BaseURL: server.URL, Token: "secret-token", HTTPClient: server.Client()}
+	broadcast, err := client.PutBroadcast(context.Background(), "recording-1", BroadcastUpdate{
+		State: "live", HLSURL: "https://stream.btcpp.dev/live/stream-7/index.m3u8",
+	})
+	if err != nil || broadcast.State != "live" || !broadcast.IsLive {
+		t.Fatalf("broadcast=%+v err=%v", broadcast, err)
+	}
+}

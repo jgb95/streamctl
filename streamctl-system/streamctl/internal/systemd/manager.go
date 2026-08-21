@@ -15,23 +15,25 @@ import (
 // Manager generates systemd service + timer units for streams,
 // and reloads/enables/disables them via systemctl.
 type Manager struct {
-	UnitDir       string // e.g. /run/systemd/system
-	UnitPrefix    string // e.g. "streamctl-"
-	RunUser       string
-	VideoDir      string
-	CacheDir      string
-	HLSDir        string
-	Remote        string // rclone remote, e.g. spaces:bucket
-	RcloneConfig  string
-	NotifyEmail   string
-	SendmailPath  string
-	CleanupCache  bool
-	Normalize     bool
-	VideoBitrate  string
-	AudioBitrate  string
-	NostrKeyDir   string
-	PublicBaseURL string
-	SelfPath      string
+	UnitDir        string // e.g. /run/systemd/system
+	UnitPrefix     string // e.g. "streamctl-"
+	RunUser        string
+	VideoDir       string
+	CacheDir       string
+	HLSDir         string
+	Remote         string // rclone remote, e.g. spaces:bucket
+	RcloneConfig   string
+	NotifyEmail    string
+	SendmailPath   string
+	CleanupCache   bool
+	Normalize      bool
+	VideoBitrate   string
+	AudioBitrate   string
+	NostrKeyDir    string
+	PublicBaseURL  string
+	SelfPath       string
+	BTCPPAPIBase   string
+	BTCPPTokenFile string
 }
 
 type UnitLog struct {
@@ -366,6 +368,9 @@ func (m *Manager) renderService(s *db.Stream) string {
 	if strings.TrimSpace(m.NostrKeyDir) != "" {
 		readOnlyPaths += " " + m.NostrKeyDir
 	}
+	if strings.TrimSpace(m.BTCPPTokenFile) != "" {
+		readOnlyPaths += " " + m.BTCPPTokenFile
+	}
 	return fmt.Sprintf(`[Unit]
 Description=streamctl: %s
 After=network-online.target %s
@@ -690,17 +695,60 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 	b.WriteString(shellQuote(m.hlsPath(s.ID)))
 	b.WriteString(" -maxdepth 1 -type f -name 'segment-*.ts' -delete\n")
 	b.WriteString(m.renderNostrPublishCommand(s, "live"))
+	b.WriteString(m.renderBTCPPBroadcastCommand(s, "live"))
+	if m.btcppBroadcastConfigured(s) {
+		b.WriteString("(while /run/current-system/sw/bin/sleep 45; do\n  ")
+		b.WriteString(strings.TrimSuffix(m.renderBTCPPBroadcastCommand(s, "live"), "\n"))
+		b.WriteString("\ndone) &\n")
+		b.WriteString("btcpp_heartbeat_pid=$!\n")
+	}
+	b.WriteString("stream_rc=0\n")
 	b.WriteString("/run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -re -fflags +genpts -f concat -safe 0 -i ")
 	b.WriteString(shellQuote(m.playlistPath(s.ID)))
 	b.WriteString(" -map 0:v:0 -map 0:a:0 -dn -sn")
 	b.WriteString(" -c copy -tag:v 7 -tag:a 10 -f tee ")
 	b.WriteString(shellQuote(m.buildTeeArg(s)))
-	b.WriteString("\n")
+	b.WriteString(" || stream_rc=$?\n")
+	if m.btcppBroadcastConfigured(s) {
+		b.WriteString("/run/current-system/sw/bin/kill \"$btcpp_heartbeat_pid\" 2>/dev/null || true\n")
+		b.WriteString("wait \"$btcpp_heartbeat_pid\" 2>/dev/null || true\n")
+		b.WriteString("if [ \"$stream_rc\" -eq 0 ]; then\n  ")
+		b.WriteString(strings.TrimSuffix(m.renderBTCPPBroadcastCommand(s, "ended"), "\n"))
+		b.WriteString("\nelse\n  ")
+		b.WriteString(strings.TrimSuffix(m.renderBTCPPBroadcastCommand(s, "failed"), "\n"))
+		b.WriteString("\nfi\n")
+	}
 	b.WriteString(m.renderNostrPublishCommand(s, "ended"))
 	if m.CleanupCache && m.needsPrefetch(s) {
+		b.WriteString("if [ \"$stream_rc\" -eq 0 ]; then\n")
 		b.WriteString(m.renderCleanupScriptBody(s))
+		b.WriteString("fi\n")
 	}
+	b.WriteString("exit \"$stream_rc\"\n")
 	return b.String()
+}
+
+func (m *Manager) btcppBroadcastConfigured(s *db.Stream) bool {
+	return s != nil && strings.TrimSpace(s.BTCPPRecordingID) != "" &&
+		strings.TrimSpace(m.BTCPPAPIBase) != "" && strings.TrimSpace(m.BTCPPTokenFile) != "" &&
+		strings.TrimSpace(m.PublicBaseURL) != ""
+}
+
+func (m *Manager) renderBTCPPBroadcastCommand(s *db.Stream, state string) string {
+	if !m.btcppBroadcastConfigured(s) {
+		return ""
+	}
+	bin := strings.TrimSpace(m.SelfPath)
+	if bin == "" {
+		bin = "/run/current-system/sw/bin/cmd"
+	}
+	hlsURL := strings.TrimRight(m.PublicBaseURL, "/") + fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID)
+	return shellQuote(bin) + " btcpp-broadcast" +
+		" -api-base " + shellQuote(m.BTCPPAPIBase) +
+		" -token-file " + shellQuote(m.BTCPPTokenFile) +
+		" -recording-id " + shellQuote(s.BTCPPRecordingID) +
+		" -state " + shellQuote(state) +
+		" -hls-url " + shellQuote(hlsURL) + " || true\n"
 }
 
 func (m *Manager) renderNostrPublishCommand(s *db.Stream, status string) string {

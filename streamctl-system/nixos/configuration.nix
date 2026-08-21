@@ -67,6 +67,7 @@
     btcppOAuthClientID = "btcpp_client_CxsrZn-911KA_MRwhzwkUvHK";
     btcppOAuthClientSecretFile = "/var/lib/streamctl/btcpp-oauth-client-secret";
     btcppOAuthRedirectURL = "https://stream.btcpp.dev/oauth/callback";
+    btcppAPITokenFile = "/var/lib/streamctl/btcpp-api-token";
     digitalOceanTokenFile = "/var/lib/streamctl/digitalocean-token";
     runpodTokenFile = "/var/lib/streamctl/runpod-token";
     gpuDestroyAfterJob = true;

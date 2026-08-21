@@ -102,6 +102,18 @@
               description = "Registered OAuth callback URL. Empty derives it from publicBaseURL.";
             };
 
+            btcppAPIBaseURL = lib.mkOption {
+              type = lib.types.str;
+              default = "https://btcpp.dev";
+              description = "Bitcoin++ API base URL used for public broadcast status.";
+            };
+
+            btcppAPITokenFile = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Streamctl-owned 0400 Bitcoin++ machine token with recordings:write.";
+            };
+
             gpuWorkerHost = lib.mkOption {
               type = lib.types.str;
               default = "";
@@ -318,6 +330,8 @@
                     ${lib.optionalString (cfg.btcppOAuthClientID != "") "-btcpp-oauth-client-id=${lib.escapeShellArg cfg.btcppOAuthClientID} \\"}
                     ${lib.optionalString (cfg.btcppOAuthClientID != "") "-btcpp-oauth-client-secret-file=${lib.escapeShellArg cfg.btcppOAuthClientSecretFile} \\"}
                     ${lib.optionalString (cfg.btcppOAuthRedirectURL != "") "-btcpp-oauth-redirect-url=${lib.escapeShellArg cfg.btcppOAuthRedirectURL} \\"}
+                    ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-base=${lib.escapeShellArg cfg.btcppAPIBaseURL} \\"}
+                    ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-token-file=${lib.escapeShellArg cfg.btcppAPITokenFile} \\"}
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
                     -gpu-worker-command=${cfg.gpuWorkerCommand} \
                     -do-token-file=${cfg.digitalOceanTokenFile} \

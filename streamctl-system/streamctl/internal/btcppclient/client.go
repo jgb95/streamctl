@@ -54,6 +54,22 @@ type RecordingUpdate struct {
 	PublishedAt *string `json:"published_at,omitempty"`
 }
 
+type BroadcastUpdate struct {
+	State         string `json:"state"`
+	HLSURL        string `json:"hls_url,omitempty"`
+	XBroadcastURL string `json:"x_broadcast_url,omitempty"`
+}
+
+type Broadcast struct {
+	State         string  `json:"state"`
+	HLSURL        *string `json:"hls_url"`
+	XBroadcastURL *string `json:"x_broadcast_url"`
+	StartedAt     *string `json:"started_at"`
+	EndedAt       *string `json:"ended_at"`
+	HeartbeatAt   *string `json:"heartbeat_at"`
+	IsLive        bool    `json:"is_live"`
+}
+
 func TokenFromFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -92,6 +108,15 @@ func (client *Client) RecordingCandidates(ctx context.Context, conference string
 func (client *Client) PutRecording(ctx context.Context, conference, talkID string, update RecordingUpdate) (*Recording, error) {
 	path := "/api/v1/conferences/" + url.PathEscape(strings.TrimSpace(conference)) + "/talks/" + url.PathEscape(strings.TrimSpace(talkID)) + "/recording"
 	var response Recording
+	if err := client.do(ctx, http.MethodPut, path, update, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (client *Client) PutBroadcast(ctx context.Context, recordingID string, update BroadcastUpdate) (*Broadcast, error) {
+	path := "/api/v1/recordings/" + url.PathEscape(strings.TrimSpace(recordingID)) + "/broadcast"
+	var response Broadcast
 	if err := client.do(ctx, http.MethodPut, path, update, &response); err != nil {
 		return nil, err
 	}
