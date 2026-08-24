@@ -87,6 +87,12 @@ Render payload:
 }
 ```
 
+Manifest media paths are bucket object keys such as
+`dev26/recordings/edits/keynote.mp4`. The worker stages those objects locally
+and uploads completed artifacts under
+`<conference>/recordings/renders/<streamctl-job-id>/`, writing `ready.json`
+last.
+
 Response:
 
 ```json

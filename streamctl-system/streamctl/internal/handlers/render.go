@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 )
 
 const maxRenderManifestBytes = 2 << 20
+
+const renderSubmissionStaleAfter = 2 * time.Minute
 
 type renderManifestEnvelope struct {
 	Version  int             `json:"version"`
@@ -32,6 +35,7 @@ type renderJobStub struct {
 }
 
 type renderSegmentStub struct {
+	Type    string `json:"type"`
 	Src     string `json:"src"`
 	Overlay string `json:"overlay"`
 	Audio   *struct {
@@ -49,6 +53,7 @@ type renderQueueItemView struct {
 	CreatedAt    string
 	StartedAt    string
 	FinishedAt   string
+	OutputPrefix string
 }
 
 type renderJobsView struct {
@@ -83,6 +88,7 @@ func validateRenderManifest(raw []byte) error {
 		return errors.New("manifest must contain at least one job")
 	}
 	seen := map[string]bool{}
+	conference := ""
 	for _, job := range manifest.Jobs {
 		id := strings.TrimSpace(job.ID)
 		if id == "" {
@@ -96,17 +102,47 @@ func validateRenderManifest(raw []byte) error {
 			return fmt.Errorf("manifest job %q must contain at least one segment", id)
 		}
 		for _, segment := range job.Segments {
-			for _, source := range []string{segment.Src, segment.Overlay} {
-				if source != "" && !strings.HasPrefix(source, "/") {
-					return fmt.Errorf("manifest source %q must be an absolute worker path", source)
-				}
+			switch segment.Type {
+			case "image", "video", "chunkedVideo":
+			default:
+				return fmt.Errorf("every segment in manifest job %q must have type image, video, or chunkedVideo", id)
 			}
-			if segment.Audio != nil && segment.Audio.Src != "" && !strings.HasPrefix(segment.Audio.Src, "/") {
-				return fmt.Errorf("manifest audio source %q must be an absolute worker path", segment.Audio.Src)
+			if strings.TrimSpace(segment.Src) == "" {
+				return fmt.Errorf("every segment in manifest job %q must have a source object key", id)
+			}
+			sources := []string{segment.Src, segment.Overlay}
+			if segment.Audio != nil {
+				sources = append(sources, segment.Audio.Src)
+			}
+			for _, source := range sources {
+				if source == "" {
+					continue
+				}
+				clean, err := validateRenderObjectKey(source)
+				if err != nil {
+					return err
+				}
+				currentConference := strings.SplitN(clean, "/", 2)[0]
+				if conference == "" {
+					conference = currentConference
+				} else if currentConference != conference {
+					return fmt.Errorf("all render sources must belong to one conference; found %q and %q", conference, currentConference)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func validateRenderObjectKey(source string) (string, error) {
+	if source != strings.TrimSpace(source) || strings.ContainsAny(source, "\r\n\x00") {
+		return "", fmt.Errorf("manifest source %q is not a valid object key", source)
+	}
+	clean := path.Clean(source)
+	if source == "" || strings.HasPrefix(source, "/") || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean != source || !strings.Contains(clean, "/") {
+		return "", fmt.Errorf("manifest source %q must be a relative <conference>/... object key", source)
+	}
+	return clean, nil
 }
 
 func (h *Handler) renderJobs(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +161,7 @@ func (h *Handler) renderQueueView() renderJobsView {
 				AttemptCount: item.AttemptCount, LastError: item.LastError,
 				CreatedAt: item.CreatedAt.Format("2006-01-02 15:04"),
 				StartedAt: formatOptionalTime(item.StartedAt), FinishedAt: formatOptionalTime(item.FinishedAt),
+				OutputPrefix: renderOutputPrefix(item.ID, item.ManifestJSON),
 			})
 		}
 	}
@@ -137,6 +174,23 @@ func (h *Handler) renderQueueView() renderJobsView {
 		view.Finished, view.Cancelled = counts["finished"], counts["cancelled"]
 	}
 	return view
+}
+
+func renderOutputPrefix(id int64, raw string) string {
+	var manifest renderManifestEnvelope
+	if json.Unmarshal([]byte(raw), &manifest) != nil {
+		return ""
+	}
+	for _, job := range manifest.Jobs {
+		for _, segment := range job.Segments {
+			clean, err := validateRenderObjectKey(segment.Src)
+			if err == nil {
+				conference := strings.SplitN(clean, "/", 2)[0]
+				return fmt.Sprintf("%s/recordings/renders/%d/", conference, id)
+			}
+		}
+	}
+	return ""
 }
 
 func (h *Handler) renderJobCreate(w http.ResponseWriter, r *http.Request) {
@@ -200,22 +254,25 @@ func remoteSSHInput(ctx context.Context, host, remoteCommand, input string) (str
 
 func (h *Handler) startRemoteRender(ctx context.Context, host string, item db.RenderJobQueueItem) (string, string, error) {
 	unit, workspace := renderUnitName(item.ID), renderWorkspace(item.ID)
-	stage := "umask 077; mkdir -p " + shellQuote(workspace) + "; rm -f " + shellQuote(workspace+"/result") + " " + shellQuote(workspace+"/exit-code") + "; cat > " + shellQuote(workspace+"/manifest.json")
-	if out, err := remoteSSHInput(ctx, host, stage, item.ManifestJSON); err != nil {
-		return unit, out, fmt.Errorf("stage manifest: %w", err)
-	}
 	command := strings.TrimSpace(h.RenderWorkerCommand)
 	if command == "" {
 		return unit, "", errors.New("render worker command is not configured")
 	}
-	manifest := workspace + "/manifest.json"
-	output := strings.TrimRight(h.RenderOutputDir, "/") + "/" + strconv.FormatInt(item.ID, 10)
-	validateCommand := command + " validate " + shellQuote(manifest)
-	if out, err := remoteSSH(ctx, host, validateCommand); err != nil {
-		_, _ = remoteSSH(context.Background(), host, "rm -rf -- "+shellQuote(workspace))
-		return unit, out, fmt.Errorf("conf-render validation: %w", err)
+	outputRoot := strings.TrimRight(strings.TrimSpace(h.RenderOutputDir), "/")
+	if outputRoot == "" || !strings.HasPrefix(outputRoot, "/") {
+		return unit, "", errors.New("render output directory must be an absolute worker path")
 	}
-	renderInvocation := command + " render " + shellQuote(manifest) + " --output " + shellQuote(output) + " --work-dir " + shellQuote(workspace+"/work") + " --overwrite"
+	remoteName := strings.TrimSpace(h.Remote)
+	if remoteName == "" {
+		return unit, "", errors.New("Spaces remote is not configured")
+	}
+	stage := "umask 077; mkdir -p " + shellQuote(workspace) + "; rm -f " + shellQuote(workspace+"/result") + " " + shellQuote(workspace+"/exit-code") + "; cat > " + shellQuote(workspace+"/manifest.json")
+	if out, err := remoteSSHInput(ctx, host, stage, item.ManifestJSON); err != nil {
+		return unit, out, fmt.Errorf("stage manifest: %w", err)
+	}
+	manifest := workspace + "/manifest.json"
+	output := outputRoot + "/" + strconv.FormatInt(item.ID, 10)
+	renderInvocation := "env RCLONE_CONFIG=/root/rclone.conf SPACES_REMOTE=" + shellQuote(remoteName) + " " + shellQuote(command) + " " + shellQuote(manifest) + " " + shellQuote(output) + " " + shellQuote(workspace+"/work")
 	renderCommand := "set +e; mkdir -p " + shellQuote(output) + "; " + renderInvocation + "; rc=$?; printf '%s\\n' \"$rc\" > " + shellQuote(workspace+"/exit-code") + "; if [ \"$rc\" -eq 0 ]; then printf 'success\\n' > " + shellQuote(workspace+"/result") + "; else printf 'failed\\n' > " + shellQuote(workspace+"/result") + "; fi; exit \"$rc\""
 	remote := "systemd-run --unit=" + shellQuote(strings.TrimSuffix(unit, ".service")) + " --collect --property=Type=exec --property=TimeoutStartSec=48h /bin/sh -lc " + shellQuote(renderCommand)
 	out, err := remoteSSH(ctx, host, remote)
@@ -229,6 +286,10 @@ func (h *Handler) dispatchNextRender(ctx context.Context, host string) bool {
 			log.Printf("loading next queued render job failed: %v", err)
 		}
 		return false
+	}
+	if out, err := waitForRemoteSSH(ctx, host, 2*time.Minute); err != nil {
+		log.Printf("GPU worker SSH readiness failed for queued render %d: %v: %s", item.ID, err, strings.TrimSpace(out))
+		return true
 	}
 	unit := renderUnitName(item.ID)
 	if err := h.DB.MarkRenderQueueRunning(item.ID, unit); err != nil {
@@ -255,7 +316,7 @@ func renderJobIDFromUnit(unit string) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []gpuJobView) {
+func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []gpuJobView, workerStateReliable bool) {
 	seen := make(map[int64]bool)
 	for _, job := range jobs {
 		id, ok := renderJobIDFromUnit(job.UnitName)
@@ -274,13 +335,14 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 		if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 			status = "failed"
 			full := h.gpuJob(ctx, host, job.UnitName, true)
-			message = firstNonEmptyString(full.Journal, full.Error, full.Result)
+			message = firstNonEmptyString(gpuFailureJournalSummary(full.Journal), full.Error, full.Result)
 		}
 		if err := h.DB.MarkRenderQueueFinished(id, status, message); err != nil {
 			log.Printf("reconciling render job %d failed: %v", id, err)
 			continue
 		}
 		_, _ = remoteSSH(context.Background(), host, "rm -rf -- "+shellQuote(renderWorkspace(id)))
+		h.destroyManagedGPUAfterTerminalJob(ctx, job)
 	}
 	running, err := h.DB.ListOpenRenderQueueItems(1000)
 	if err != nil {
@@ -293,6 +355,11 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 		}
 		status, exitCode, found := h.remoteRenderResult(ctx, host, item.ID)
 		if !found {
+			if shouldRequeueMissingRenderJob(item, workerStateReliable, time.Now()) {
+				if err := h.DB.RequeueRunningRenderJob(item.ID, "worker did not retain the submitted render; requeued automatically"); err != nil {
+					log.Printf("requeueing missing render job %d failed: %v", item.ID, err)
+				}
+			}
 			continue
 		}
 		message := ""
@@ -304,6 +371,39 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 			continue
 		}
 		_, _ = remoteSSH(context.Background(), host, "rm -rf -- "+shellQuote(renderWorkspace(item.ID)))
+		h.destroyManagedGPUAfterTerminalJob(ctx, renderTerminalGPUJob(item.UnitName, status))
+	}
+}
+
+func renderTerminalGPUJob(unit, status string) gpuJobView {
+	job := gpuJobView{UnitName: unit, ActiveState: "inactive", Result: "success"}
+	if status != "finished" {
+		job.ActiveState = "failed"
+		job.Result = "exit-code"
+	}
+	return job
+}
+
+func shouldRequeueMissingRenderJob(item db.RenderJobQueueItem, workerStateReliable bool, now time.Time) bool {
+	return workerStateReliable && item.Status == "running" && item.StartedAt != nil && now.Sub(*item.StartedAt) >= renderSubmissionStaleAfter
+}
+
+func (h *Handler) reconcileUnavailableRenderQueue(worker gpuWorkerView) {
+	if !managedGPUWorkerDefinitelyUnavailable(worker) {
+		return
+	}
+	items, err := h.DB.ListOpenRenderQueueItems(1000)
+	if err != nil {
+		log.Printf("listing render jobs for unavailable worker reconciliation failed: %v", err)
+		return
+	}
+	for _, item := range items {
+		if item.Status != "running" {
+			continue
+		}
+		if err := h.DB.RequeueRunningRenderJob(item.ID, "managed worker is unavailable; requeued automatically"); err != nil {
+			log.Printf("requeueing render job %d after worker loss failed: %v", item.ID, err)
+		}
 	}
 }
 
@@ -345,6 +445,7 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 				}
 				_ = h.DB.MarkRenderQueueFinished(id, status, message)
 				_, _ = remoteSSH(context.Background(), host, "rm -rf -- "+shellQuote(renderWorkspace(id)))
+				h.destroyManagedGPUAfterTerminalJob(ctx, renderTerminalGPUJob(unit, status))
 				go h.dispatchGPUQueueOnce(context.Background())
 				return
 			}
@@ -356,10 +457,11 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 			if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 				status = "failed"
 				full := h.gpuJob(ctx, host, unit, true)
-				message = firstNonEmptyString(full.Journal, full.Error, full.Result)
+				message = firstNonEmptyString(gpuFailureJournalSummary(full.Journal), full.Error, full.Result)
 			}
 			_ = h.DB.MarkRenderQueueFinished(id, status, message)
 			_, _ = remoteSSH(context.Background(), host, "rm -rf -- "+shellQuote(renderWorkspace(id)))
+			h.destroyManagedGPUAfterTerminalJob(ctx, job)
 			go h.dispatchGPUQueueOnce(context.Background())
 			return
 		}

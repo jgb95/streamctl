@@ -39,7 +39,14 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
-const gpuWorkerSSHKeyPath = "/var/lib/streamctl/gpu-worker-ssh-key"
+//go:embed worker/render-from-spaces.py
+var renderWorkerScriptText string
+
+const (
+	gpuWorkerSSHKeyPath  = "/var/lib/streamctl/gpu-worker-ssh-key"
+	confRenderRepository = "https://github.com/jgb95/conf-render.git"
+	confRenderRevision   = "d067f0acc99ee68925b5fae2f1d29ae23a0fe88d"
+)
 
 type Handler struct {
 	DB                  *db.DB
@@ -1710,6 +1717,7 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 			openQueue = h.reconcileStaleGPUQueue(worker, nil, openQueue)
 			queuedCount, _ = countGPUQueueStates(openQueue)
 		}
+		h.reconcileUnavailableRenderQueue(worker)
 		if renderCounts, err := h.DB.RenderQueueStatusCounts(); err != nil {
 			log.Printf("counting queued render jobs failed: %v", err)
 		} else {
@@ -1737,7 +1745,7 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	if status.Error != "" {
 		log.Printf("GPU queue status warning: %s", status.Error)
 	}
-	h.reconcileRenderJobs(ctx, host, status.Jobs)
+	h.reconcileRenderJobs(ctx, host, status.Jobs, status.Available && status.Error == "")
 	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
 	if err != nil {
 		log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
@@ -2350,10 +2358,10 @@ func (h *Handler) withManagedWorkerSSHReadiness(ctx context.Context, view gpuWor
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	out, err := remoteSSH(probeCtx, view.SSHHost, "true")
+	out, err := remoteSSH(probeCtx, view.SSHHost, "test -f /root/.streamctl-worker-ready")
 	if err != nil {
 		view.Status = "starting"
-		view.Error = fmt.Sprintf("SSH not ready: %v: %s", err, strings.TrimSpace(out))
+		view.Error = fmt.Sprintf("worker setup not ready: %v: %s", err, strings.TrimSpace(out))
 	}
 	return view
 }
@@ -2407,13 +2415,19 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 		DockerStartCmd: []string{"bash", "-lc", strings.Join([]string{
 			"set -euo pipefail",
 			"apt-get update",
-			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates util-linux",
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates util-linux curl git",
 			"mkdir -p /run/sshd /root/.ssh",
 			"printf '%s\n' \"$SSH_PUBLIC_KEY\" > /root/.ssh/authorized_keys",
 			"chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys",
 			"printf '%s' \"$RCLONE_CONFIG_B64\" | base64 -d > /root/rclone.conf",
 			"printf '%s' \"$TRANSCODE_SCRIPT_B64\" | base64 -d > /root/transcode-nvenc.sh",
-			"chmod 400 /root/rclone.conf && chmod 755 /root/transcode-nvenc.sh",
+			"printf '%s' \"$RENDER_SCRIPT_B64\" | base64 -d > /root/render-from-spaces.py",
+			"chmod 400 /root/rclone.conf && chmod 755 /root/transcode-nvenc.sh /root/render-from-spaces.py",
+			"curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh",
+			"git clone " + shellQuote(confRenderRepository) + " /root/conf-render",
+			"git -C /root/conf-render checkout " + shellQuote(confRenderRevision),
+			"/root/.local/bin/uv sync --frozen --directory /root/conf-render",
+			"touch /root/.streamctl-worker-ready",
 			"exec /usr/sbin/sshd -D -e",
 		}, " && ")},
 	}); err != nil {
@@ -2454,6 +2468,7 @@ func (h *Handler) runpodWorkerEnv(sshPublicKey string) (map[string]string, error
 		"SSH_PUBLIC_KEY":       strings.TrimSpace(sshPublicKey),
 		"RCLONE_CONFIG_B64":    base64.StdEncoding.EncodeToString(rcloneConfig),
 		"TRANSCODE_SCRIPT_B64": base64.StdEncoding.EncodeToString([]byte(gpuTranscodeScript())),
+		"RENDER_SCRIPT_B64":    base64.StdEncoding.EncodeToString([]byte(renderWorkerScript())),
 	}, nil
 }
 
@@ -2621,12 +2636,13 @@ func (h *Handler) gpuWorkerUserData() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading rclone config: %w", err)
 	}
-	script := gpuTranscodeScript()
+	transcodeScript := gpuTranscodeScript()
+	renderScript := renderWorkerScript()
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euxo pipefail
 DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg rclone curl util-linux
+DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg rclone curl util-linux git
 install -d -m 0700 /root
 base64 -d >/root/rclone.conf <<'STREAMCTL_RCLONE'
 %s
@@ -2634,11 +2650,20 @@ STREAMCTL_RCLONE
 base64 -d >/root/transcode-nvenc.sh <<'STREAMCTL_SCRIPT'
 %s
 STREAMCTL_SCRIPT
+base64 -d >/root/render-from-spaces.py <<'STREAMCTL_RENDER_SCRIPT'
+%s
+STREAMCTL_RENDER_SCRIPT
 chmod 0400 /root/rclone.conf
 chmod 0755 /root/transcode-nvenc.sh
+chmod 0755 /root/render-from-spaces.py
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh
+git clone %s /root/conf-render
+git -C /root/conf-render checkout %s
+/root/.local/bin/uv sync --frozen --directory /root/conf-render
 echo "$DROPLET_ID" >/root/droplet-id
+touch /root/.streamctl-worker-ready
 echo 'streamctl GPU worker ready'
-`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(script))), nil
+`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(transcodeScript)), base64.StdEncoding.EncodeToString([]byte(renderScript)), shellQuote(confRenderRepository), shellQuote(confRenderRevision)), nil
 }
 
 func (h *Handler) gpuWorkerTag() string {
@@ -2780,6 +2805,8 @@ rclone_copyto "$ready_file" "$(remote_path "${normalized_path}.ready.json")"
 echo "transcode: ready ${normalized_path}"
 `
 }
+
+func renderWorkerScript() string { return renderWorkerScriptText }
 
 func (h *Handler) listNormalizationFiles(ctx context.Context) ([]normalizationFileView, error) {
 	confs, err := h.listSpacesConferences(ctx)

@@ -137,14 +137,14 @@
 
             renderWorkerCommand = lib.mkOption {
               type = lib.types.str;
-              default = "/root/conf-render/.venv/bin/conf-render";
-              description = "conf-render executable on the shared GPU worker.";
+              default = "/root/render-from-spaces.py";
+              description = "Bucket-aware conf-render wrapper on the shared GPU worker.";
             };
 
             renderOutputDir = lib.mkOption {
               type = lib.types.str;
               default = "/root/streamctl-render-output";
-              description = "Persistent output directory on the GPU worker, partitioned by streamctl render job ID.";
+              description = "Temporary output directory on the GPU worker, partitioned by streamctl render job ID.";
             };
 
             digitalOceanTokenFile = lib.mkOption {

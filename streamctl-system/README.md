@@ -205,19 +205,19 @@ make stream-logs ID=3      # specific scheduled stream
 
 **Queue a `conf-render` manifest:**
 
-1. Ensure `conf-render` and its runtime dependencies are installed on the GPU worker.
-2. Configure the worker command and persistent output root in `nixos/configuration.nix` if the defaults do not match:
+1. Managed GPU workers install the pinned `conf-render` version and bucket-aware render wrapper during setup. For an external worker, install both at the configured paths.
+2. Configure the worker command and temporary output root in `nixos/configuration.nix` if the defaults do not match:
 
    ```nix
    services.streamctl = {
-     renderWorkerCommand = "/root/conf-render/.venv/bin/conf-render";
+     renderWorkerCommand = "/root/render-from-spaces.py";
      renderOutputDir = "/root/streamctl-render-output";
    };
    ```
 
-3. Open **Render Jobs**, paste a version 1 manifest, and submit it. Referenced source, overlay, and audio paths must be absolute paths already visible on the worker.
+3. Open **Render Jobs**, paste a version 1 manifest, and submit it. Referenced source, overlay, and audio paths are relative DigitalOcean Spaces object keys and must all belong to the same conference.
 
-streamctl performs structural validation locally, stages the manifest with mode `0700`/`umask 077`, asks `conf-render validate` to perform authoritative validation, and then starts a transient worker unit. Output is retained under `<renderOutputDir>/<streamctl-job-id>/`; staged manifests and work files are removed after terminal completion. Failed or cancelled jobs can be retried from the same page.
+streamctl performs structural validation locally and stages the manifest with mode `0700`/`umask 077`. The worker downloads the referenced objects into an isolated work directory, asks `conf-render validate` to perform authoritative validation, renders locally, and uploads the results plus `ready.json` under `<conference>/recordings/renders/<streamctl-job-id>/`. Local staged manifests and work files are removed after terminal completion. Failed or cancelled jobs can be retried from the same page.
 
 The queue is durable across streamctl restarts. Worker-side result markers allow streamctl to reconcile a completed transient unit after reconnecting. Managed workers are not destroyed while either a transcode or render remains queued/running.
 
