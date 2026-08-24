@@ -1156,6 +1156,22 @@ func (db *DB) ResetRenderJobForRetry(id int64, lastError string) error {
 	return requireRow(result, err)
 }
 
+func (db *DB) UpdateRenderQueueError(id int64, lastError string) error {
+	result, err := db.Exec(`
+		UPDATE render_job_queue SET last_error = ?
+		WHERE id = ? AND status = 'running'
+	`, lastError, id)
+	return requireRow(result, err)
+}
+
+func (db *DB) CancelRenderJob(id int64, lastError string) error {
+	result, err := db.Exec(`
+		UPDATE render_job_queue SET status = 'cancelled', last_error = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND status IN ('queued', 'running')
+	`, lastError, id)
+	return requireRow(result, err)
+}
+
 func (db *DB) MarkRenderQueueFinished(id int64, status, lastError string) error {
 	if status == "" {
 		status = "finished"

@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,13 +44,55 @@ func TestValidateRenderManifest(t *testing.T) {
 }
 
 func TestRenderJobIDFromUnit(t *testing.T) {
-	if id, ok := renderJobIDFromUnit("streamctl-gpu-render-42.service"); !ok || id != 42 {
-		t.Fatalf("renderJobIDFromUnit() = (%d, %v), want (42, true)", id, ok)
+	for _, unit := range []string{"streamctl-gpu-render-42.service", "streamctl-gpu-render-42-attempt-3.service"} {
+		if id, ok := renderJobIDFromUnit(unit); !ok || id != 42 {
+			t.Fatalf("renderJobIDFromUnit(%q) = (%d, %v), want (42, true)", unit, id, ok)
+		}
 	}
-	for _, unit := range []string{"streamctl-gpu-foo.service", "streamctl-gpu-render-x.service", "streamctl-gpu-render-0.service"} {
+	for _, unit := range []string{"streamctl-gpu-foo.service", "streamctl-gpu-render-x.service", "streamctl-gpu-render-0.service", "streamctl-gpu-render-42-attempt-0.service", "streamctl-gpu-render-42-attempt-x.service"} {
 		if _, ok := renderJobIDFromUnit(unit); ok {
 			t.Fatalf("renderJobIDFromUnit(%q) unexpectedly succeeded", unit)
 		}
+	}
+}
+
+func TestRenderAttemptUnitNamesAreStableAndDistinct(t *testing.T) {
+	first := renderUnitName(42, 1)
+	if got := renderUnitName(42, 1); got != first {
+		t.Fatalf("same attempt changed unit name: %q != %q", got, first)
+	}
+	if second := renderUnitName(42, 2); second == first {
+		t.Fatalf("different attempts share unit name %q", first)
+	}
+	command := remoteRenderLaunchCommand(first, "run-render")
+	for _, want := range []string{"systemctl show", "LoadState", "systemd-run", "run-render"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("launch command does not contain %q: %s", want, command)
+		}
+	}
+}
+
+func TestCancelQueuedRenderJob(t *testing.T) {
+	database := openGPUQueueTestDB(t)
+	item, err := database.EnqueueRenderJob("keynote", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: database}
+	request := httptest.NewRequest(http.MethodPost, "/worker/render/cancel/"+strconv.FormatInt(item.ID, 10), nil)
+	recorder := httptest.NewRecorder()
+
+	h.renderJobCancel(recorder, request)
+
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	got, err := database.GetRenderQueueItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "cancelled" || got.LastError != "cancelled by user" {
+		t.Fatalf("unexpected cancelled item: %+v", got)
 	}
 }
 
@@ -160,7 +206,7 @@ func TestReconcileUnavailableRenderQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.MarkRenderQueueRunning(item.ID, renderUnitName(item.ID)); err != nil {
+	if err := database.MarkRenderQueueRunning(item.ID, renderUnitName(item.ID, 1)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,7 +228,7 @@ func TestReconcileUnavailableRenderQueueLeavesStartingWorkerAlone(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.MarkRenderQueueRunning(item.ID, renderUnitName(item.ID)); err != nil {
+	if err := database.MarkRenderQueueRunning(item.ID, renderUnitName(item.ID, 1)); err != nil {
 		t.Fatal(err)
 	}
 

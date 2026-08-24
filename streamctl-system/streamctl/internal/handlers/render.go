@@ -242,7 +242,55 @@ func (h *Handler) renderJobRetry(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/worker", http.StatusSeeOther)
 }
 
-func renderUnitName(id int64) string  { return fmt.Sprintf("streamctl-gpu-render-%d.service", id) }
+func renderJobIDFromPath(requestPath string, prefixes ...string) (int64, bool) {
+	for _, prefix := range prefixes {
+		if value, ok := strings.CutPrefix(requestPath, prefix); ok {
+			id, err := strconv.ParseInt(value, 10, 64)
+			return id, err == nil && id > 0
+		}
+	}
+	return 0, false
+}
+
+func (h *Handler) renderJobCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, ok := renderJobIDFromPath(r.URL.Path, "/worker/render/cancel/", "/render-jobs/cancel/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	item, err := h.DB.GetRenderQueueItem(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if item.Status == "running" {
+		host, err := h.gpuWorkerSSHHost(r.Context())
+		if err != nil {
+			http.Error(w, "stopping render: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if out, err := h.stopRemoteRender(ctx, host, item.UnitName, item.ID); err != nil {
+			http.Error(w, strings.TrimSpace(fmt.Sprintf("stopping render: %v: %s", err, out)), http.StatusBadGateway)
+			return
+		}
+	}
+	if err := h.DB.CancelRenderJob(id, "cancelled by user"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	go h.dispatchGPUQueueOnce(context.Background())
+	http.Redirect(w, r, "/worker", http.StatusSeeOther)
+}
+
+func renderUnitName(id int64, attempt int) string {
+	return fmt.Sprintf("streamctl-gpu-render-%d-attempt-%d.service", id, attempt)
+}
 func renderWorkspace(id int64) string { return fmt.Sprintf("/root/streamctl-render-jobs/%d", id) }
 
 func remoteSSHInput(ctx context.Context, host, remoteCommand, input string) (string, error) {
@@ -252,8 +300,36 @@ func remoteSSHInput(ctx context.Context, host, remoteCommand, input string) (str
 	return string(out), err
 }
 
+func remoteRenderLaunchCommand(unit, renderCommand string) string {
+	unitBase := strings.TrimSuffix(unit, ".service")
+	launch := "systemd-run --unit=" + shellQuote(unitBase) + " --collect --property=Type=exec --property=TimeoutStartSec=48h /bin/sh -lc " + shellQuote(renderCommand)
+	return "unit=" + shellQuote(unit) + "; state=$(systemctl show \"$unit\" --property=LoadState --value 2>/dev/null || true); if [ -n \"$state\" ] && [ \"$state\" != not-found ]; then printf '%s\\n' \"$unit\"; exit 0; fi; exec " + launch
+}
+
+func remoteRenderPresenceCommand(unit string, id int64) string {
+	workspace := renderWorkspace(id)
+	return "unit=" + shellQuote(unit) + "; if [ -f " + shellQuote(workspace+"/result") + " ]; then printf 'present\\n'; exit 0; fi; state=$(systemctl show \"$unit\" --property=LoadState --value 2>/dev/null || true); if [ -n \"$state\" ] && [ \"$state\" != not-found ]; then printf 'present\\n'; else printf 'absent\\n'; fi"
+}
+
+func (h *Handler) remoteRenderPresence(ctx context.Context, host, unit string, id int64) (present, reliable bool) {
+	out, err := remoteSSH(ctx, host, remoteRenderPresenceCommand(unit, id))
+	if err != nil {
+		return false, false
+	}
+	return strings.TrimSpace(out) == "present", true
+}
+
+func (h *Handler) stopRemoteRender(ctx context.Context, host, unit string, id int64) (string, error) {
+	command := "systemctl stop " + shellQuote(unit) + " 2>/dev/null || true; rm -rf -- " + shellQuote(renderWorkspace(id))
+	outputRoot := strings.TrimRight(strings.TrimSpace(h.RenderOutputDir), "/")
+	if outputRoot != "" && strings.HasPrefix(outputRoot, "/") {
+		command += " " + shellQuote(outputRoot+"/"+strconv.FormatInt(id, 10))
+	}
+	return remoteSSH(ctx, host, command)
+}
+
 func (h *Handler) startRemoteRender(ctx context.Context, host string, item db.RenderJobQueueItem) (string, string, error) {
-	unit, workspace := renderUnitName(item.ID), renderWorkspace(item.ID)
+	unit, workspace := renderUnitName(item.ID, item.AttemptCount+1), renderWorkspace(item.ID)
 	command := strings.TrimSpace(h.RenderWorkerCommand)
 	if command == "" {
 		return unit, "", errors.New("render worker command is not configured")
@@ -274,7 +350,7 @@ func (h *Handler) startRemoteRender(ctx context.Context, host string, item db.Re
 	output := outputRoot + "/" + strconv.FormatInt(item.ID, 10)
 	renderInvocation := "env RCLONE_CONFIG=/root/rclone.conf SPACES_REMOTE=" + shellQuote(remoteName) + " " + shellQuote(command) + " " + shellQuote(manifest) + " " + shellQuote(output) + " " + shellQuote(workspace+"/work")
 	renderCommand := "set +e; mkdir -p " + shellQuote(output) + "; " + renderInvocation + "; rc=$?; printf '%s\\n' \"$rc\" > " + shellQuote(workspace+"/exit-code") + "; if [ \"$rc\" -eq 0 ]; then printf 'success\\n' > " + shellQuote(workspace+"/result") + "; else printf 'failed\\n' > " + shellQuote(workspace+"/result") + "; fi; exit \"$rc\""
-	remote := "systemd-run --unit=" + shellQuote(strings.TrimSuffix(unit, ".service")) + " --collect --property=Type=exec --property=TimeoutStartSec=48h /bin/sh -lc " + shellQuote(renderCommand)
+	remote := remoteRenderLaunchCommand(unit, renderCommand)
 	out, err := remoteSSH(ctx, host, remote)
 	return unit, out, err
 }
@@ -291,7 +367,7 @@ func (h *Handler) dispatchNextRender(ctx context.Context, host string) bool {
 		log.Printf("GPU worker SSH readiness failed for queued render %d: %v: %s", item.ID, err, strings.TrimSpace(out))
 		return true
 	}
-	unit := renderUnitName(item.ID)
+	unit := renderUnitName(item.ID, item.AttemptCount+1)
 	if err := h.DB.MarkRenderQueueRunning(item.ID, unit); err != nil {
 		log.Printf("claiming render job %d failed: %v", item.ID, err)
 		return true
@@ -299,8 +375,16 @@ func (h *Handler) dispatchNextRender(ctx context.Context, host string) bool {
 	unit, out, err := h.startRemoteRender(ctx, host, *item)
 	if err != nil {
 		errText := strings.TrimSpace(fmt.Sprintf("%v: %s", err, out))
-		log.Printf("render job %d submission failed: %s", item.ID, errText)
-		_ = h.DB.MarkRenderQueueFinished(item.ID, "failed", errText)
+		present, reliable := h.remoteRenderPresence(ctx, host, unit, item.ID)
+		if reliable && !present {
+			log.Printf("render job %d submission failed: %s", item.ID, errText)
+			_ = h.DB.MarkRenderQueueFinished(item.ID, "failed", errText)
+			_, _ = remoteSSH(context.Background(), host, "rm -rf -- "+shellQuote(renderWorkspace(item.ID)))
+			return true
+		}
+		log.Printf("render job %d submission outcome is ambiguous; monitoring idempotent unit %s: %s", item.ID, unit, errText)
+		_ = h.DB.UpdateRenderQueueError(item.ID, "submission response lost; reconciling worker state: "+errText)
+		go h.monitorRenderJob(item.ID, unit, host)
 		return true
 	}
 	go h.monitorRenderJob(item.ID, unit, host)
@@ -311,6 +395,11 @@ func renderJobIDFromUnit(unit string) (int64, bool) {
 	value := strings.TrimSuffix(strings.TrimPrefix(unit, "streamctl-gpu-render-"), ".service")
 	if value == unit {
 		return 0, false
+	}
+	if idText, attemptText, ok := strings.Cut(value, "-attempt-"); ok {
+		attempt, attemptErr := strconv.Atoi(attemptText)
+		id, idErr := strconv.ParseInt(idText, 10, 64)
+		return id, idErr == nil && id > 0 && attemptErr == nil && attempt > 0
 	}
 	id, err := strconv.ParseInt(value, 10, 64)
 	return id, err == nil && id > 0
@@ -435,9 +524,21 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 	for {
 		select {
 		case <-ctx.Done():
-			_ = h.DB.MarkRenderQueueFinished(id, "failed", "render monitor timed out")
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			out, stopErr := h.stopRemoteRender(cleanupCtx, host, unit, id)
+			cleanupCancel()
+			message := "render monitor timed out"
+			if stopErr != nil {
+				message += "; stopping remote job failed: " + strings.TrimSpace(fmt.Sprintf("%v: %s", stopErr, out))
+			}
+			_ = h.DB.MarkRenderQueueFinished(id, "failed", message)
+			h.destroyManagedGPUAfterTerminalJob(context.Background(), renderTerminalGPUJob(unit, "failed"))
+			go h.dispatchGPUQueueOnce(context.Background())
 			return
 		case <-ticker.C:
+			if item, err := h.DB.GetRenderQueueItem(id); err == nil && item.Status != "running" {
+				return
+			}
 			if status, exitCode, found := h.remoteRenderResult(ctx, host, id); found {
 				message := ""
 				if status != "finished" {

@@ -134,9 +134,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/render", h.auth(http.HandlerFunc(h.renderJobs)))
 	mux.Handle("/render/create", h.mutation(http.HandlerFunc(h.renderJobCreate)))
 	mux.Handle("/worker/render/retry/", h.mutation(http.HandlerFunc(h.renderJobRetry)))
+	mux.Handle("/worker/render/cancel/", h.mutation(http.HandlerFunc(h.renderJobCancel)))
 	mux.Handle("/render-jobs", h.auth(http.HandlerFunc(redirectTo("/render"))))
 	mux.Handle("/render-jobs/create", h.mutation(http.HandlerFunc(h.renderJobCreate)))
 	mux.Handle("/render-jobs/retry/", h.mutation(http.HandlerFunc(h.renderJobRetry)))
+	mux.Handle("/render-jobs/cancel/", h.mutation(http.HandlerFunc(h.renderJobCancel)))
 
 	mux.Handle("/endpoints", h.auth(http.HandlerFunc(h.endpoints)))
 	mux.Handle("/endpoints/create", h.mutation(http.HandlerFunc(h.endpointCreate)))

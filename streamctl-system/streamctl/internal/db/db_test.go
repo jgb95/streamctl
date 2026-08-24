@@ -167,6 +167,50 @@ func TestRenderQueueLifecycleAndRetry(t *testing.T) {
 	}
 }
 
+func TestRenderQueueCancellationAndSubmissionError(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	queued, err := database.EnqueueRenderJob("queued", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CancelRenderJob(queued.ID, "cancelled by user"); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := database.GetRenderQueueItem(queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != "cancelled" || cancelled.FinishedAt == nil || cancelled.LastError != "cancelled by user" {
+		t.Fatalf("unexpected cancelled item: %+v", cancelled)
+	}
+
+	running, err := database.EnqueueRenderJob("running", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkRenderQueueRunning(running.ID, "streamctl-gpu-render-2-attempt-1.service"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRenderQueueError(running.ID, "submission response lost"); err != nil {
+		t.Fatal(err)
+	}
+	running, err = database.GetRenderQueueItem(running.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.Status != "running" || running.LastError != "submission response lost" {
+		t.Fatalf("ambiguous submission should remain running: %+v", running)
+	}
+}
+
 func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
 	if err != nil {
