@@ -85,6 +85,26 @@ def localize_manifest(manifest: dict, inputs: Path) -> None:
                 audio["src"] = str((inputs / audio["src"]).resolve())
 
 
+def transcription_enabled(job: dict) -> bool:
+    return any(segment.get("transcribe") is True for segment in job.get("segments", []))
+
+
+def job_outputs(job: dict) -> dict:
+    job_id = job["id"]
+    outputs: dict[str, object] = {
+        "id": job_id,
+        "video": f"{job_id}.mp4",
+        "manifest": f"{job_id}.manifest.json",
+        "subtitles": None,
+    }
+    if transcription_enabled(job):
+        outputs["subtitles"] = {
+            "readable": f"{job_id}.subs.srt",
+            "words": f"{job_id}.words.srt",
+        }
+    return outputs
+
+
 def main() -> None:
     if len(sys.argv) != 4:
         fail("usage: render-from-spaces.py <manifest.json> <output-dir> <work-dir>")
@@ -94,7 +114,9 @@ def main() -> None:
         fail("SPACES_REMOTE is required")
     conf_render = os.environ.get("CONF_RENDER_COMMAND", "/root/conf-render/.venv/bin/conf-render")
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    original_manifest = json.loads(manifest_text)
+    manifest = json.loads(manifest_text)
     fields = source_fields(manifest)
     conference = PurePosixPath(fields[0][0]).parts[0]
     inputs = work / "inputs"
@@ -119,10 +141,21 @@ def main() -> None:
     run(conf_render, "validate", str(localized))
     run(conf_render, "render", str(localized), "--output", str(output), "--work-dir", str(work / "conf-render"), "--overwrite")
 
-    missing = [job["id"] for job in manifest["jobs"] if not (output / f"{job['id']}.mp4").is_file()]
+    missing: list[str] = []
+    for job in manifest["jobs"]:
+        job_id = job["id"]
+        expected = [f"{job_id}.mp4"]
+        if transcription_enabled(job):
+            expected.extend((f"{job_id}.subs.srt", f"{job_id}.words.srt"))
+        missing.extend(name for name in expected if not (output / name).is_file())
     if missing:
         fail("conf-render did not produce expected output(s): " + ", ".join(missing))
 
+    for job in original_manifest["jobs"]:
+        job_manifest = {**original_manifest, "jobs": [job]}
+        (output / f"{job['id']}.manifest.json").write_text(
+            json.dumps(job_manifest, indent=2) + "\n", encoding="utf-8"
+        )
     queue_id = output.name
     output_prefix = f"{conference}/recordings/renders/{queue_id}"
     run("rclone", "copy", "--stats", "30s", "--stats-one-line", str(output), remote_path(remote, output_prefix + "/"))
@@ -132,6 +165,7 @@ def main() -> None:
         "status": "ready",
         "manifest_job_ids": [job["id"] for job in manifest["jobs"]],
         "output_prefix": output_prefix,
+        "jobs": [job_outputs(job) for job in manifest["jobs"]],
         "files": files,
     }, indent=2) + "\n", encoding="utf-8")
     run("rclone", "copyto", str(marker), remote_path(remote, output_prefix + "/ready.json"))

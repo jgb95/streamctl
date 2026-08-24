@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,15 @@ import (
 
 	"streamctl/internal/db"
 )
+
+func containsStringValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
 
 func TestValidateRenderManifest(t *testing.T) {
 	tests := []struct {
@@ -145,6 +155,8 @@ while [ $# -gt 0 ]; do
 done
 mkdir -p "$output"
 printf 'rendered' > "$output/intro.mp4"
+printf 'readable subtitles' > "$output/intro.subs.srt"
+printf 'word subtitles' > "$output/intro.words.srt"
 `
 	for name, body := range map[string]string{"rclone": rclone, "conf-render": confRender} {
 		if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0755); err != nil {
@@ -152,7 +164,7 @@ printf 'rendered' > "$output/intro.mp4"
 		}
 	}
 	manifest := filepath.Join(root, "manifest.json")
-	if err := os.WriteFile(manifest, []byte(`{"version":1,"jobs":[{"id":"intro","segments":[{"type":"video","src":"dev26/recordings/source.mp4"}]}]}`), 0600); err != nil {
+	if err := os.WriteFile(manifest, []byte(`{"version":1,"jobs":[{"id":"intro","segments":[{"type":"video","src":"dev26/recordings/source.mp4","transcribe":true}]}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	script := filepath.Join(root, "render-from-spaces.py")
@@ -170,10 +182,54 @@ printf 'rendered' > "$output/intro.mp4"
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("render worker failed: %v\n%s", err, out)
 	}
-	for _, name := range []string{"intro.mp4", "ready.json"} {
+	for _, name := range []string{"intro.mp4", "intro.subs.srt", "intro.words.srt", "intro.manifest.json", "ready.json"} {
 		path := filepath.Join(remoteRoot, "dev26", "recordings", "renders", "42", name)
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("uploaded %s: %v", name, err)
+		}
+	}
+	manifestData, err := os.ReadFile(filepath.Join(remoteRoot, "dev26", "recordings", "renders", "42", "intro.manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uploadedManifest struct {
+		Jobs []struct {
+			Segments []struct {
+				Src string `json:"src"`
+			} `json:"segments"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(manifestData, &uploadedManifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(uploadedManifest.Jobs) != 1 || len(uploadedManifest.Jobs[0].Segments) != 1 || uploadedManifest.Jobs[0].Segments[0].Src != "dev26/recordings/source.mp4" {
+		t.Fatalf("uploaded manifest was localized instead of preserving object keys: %s", manifestData)
+	}
+	readyData, err := os.ReadFile(filepath.Join(remoteRoot, "dev26", "recordings", "renders", "42", "ready.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready struct {
+		Jobs []struct {
+			ID        string `json:"id"`
+			Video     string `json:"video"`
+			Manifest  string `json:"manifest"`
+			Subtitles *struct {
+				Readable string `json:"readable"`
+				Words    string `json:"words"`
+			} `json:"subtitles"`
+		} `json:"jobs"`
+		Files []string `json:"files"`
+	}
+	if err := json.Unmarshal(readyData, &ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(ready.Jobs) != 1 || ready.Jobs[0].Manifest != "intro.manifest.json" || ready.Jobs[0].Subtitles == nil {
+		t.Fatalf("unexpected ready metadata: %s", readyData)
+	}
+	for _, want := range []string{"intro.manifest.json", "intro.mp4", "intro.subs.srt", "intro.words.srt"} {
+		if !containsStringValue(ready.Files, want) {
+			t.Fatalf("ready file list does not contain %q: %s", want, readyData)
 		}
 	}
 }

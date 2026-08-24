@@ -217,7 +217,7 @@ make stream-logs ID=3      # specific scheduled stream
 
 3. Open **Render Jobs**, paste a version 1 manifest, and submit it. Referenced source, overlay, and audio paths are relative DigitalOcean Spaces object keys and must all belong to the same conference.
 
-streamctl performs structural validation locally and stages the manifest with mode `0700`/`umask 077`. The worker downloads the referenced objects into an isolated work directory, asks `conf-render validate` to perform authoritative validation, renders locally, and uploads the results plus `ready.json` under `<conference>/recordings/renders/<streamctl-job-id>/`. Local staged manifests and work files are removed after terminal completion. Failed or cancelled jobs can be retried from the same page.
+streamctl performs structural validation locally and stages the manifest with mode `0700`/`umask 077`. The worker downloads the referenced objects into an isolated work directory, asks `conf-render validate` to perform authoritative validation, renders locally, and uploads the results under `<conference>/recordings/renders/<streamctl-job-id>/`. Each job includes its original bucket-key definition and shared settings as `<job-id>.manifest.json`; transcription-enabled jobs also include `<job-id>.subs.srt` and `<job-id>.words.srt`. A structured `ready.json` indexes the per-job artifacts and is uploaded last. Local staged manifests and work files are removed after terminal completion. Failed or cancelled jobs can be retried from the same page.
 
 The queue is durable across streamctl restarts. Worker-side result markers allow streamctl to reconcile a completed transient unit after reconnecting. Managed workers are not destroyed while either a transcode or render remains queued/running.
 
