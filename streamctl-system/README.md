@@ -10,6 +10,16 @@ This repo contains everything needed to run it:
 - **`flake.nix`** — top-level Nix flake; defines the package, the NixOS module, and the host configuration
 - **`Makefile`** — orchestrates everything from your laptop
 
+## Prometheus metrics
+
+Streamctl exposes HTTP request count, status, duration and in-flight metrics,
+plus Go runtime and process metrics, at `/metrics`. The endpoint is disabled
+until `services.streamctl.metricsTokenFile` points to a non-empty token file;
+clients then authenticate with `Authorization: Bearer <token>`. The production
+host expects `/var/lib/streamctl/metrics-token`, mode `0400`, owned by
+`streamctl:streamctl`. Route labels use bounded ServeMux patterns rather than
+raw URLs.
+
 ```
 streamctl-system/
 ├── Makefile                          # main entry point — `make` for help

@@ -16,6 +16,7 @@ import (
 	"streamctl/internal/db"
 	"streamctl/internal/handlers"
 	"streamctl/internal/nostrpub"
+	appmetrics "streamctl/internal/observability"
 	"streamctl/internal/systemd"
 )
 
@@ -187,10 +188,12 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	metrics := appmetrics.New("streamctl")
+	mux.Handle("/metrics", metrics.Handler(strings.TrimSpace(os.Getenv("STREAMCTL_METRICS_TOKEN"))))
 	h.Register(mux)
 
 	log.Printf("streamctl listening on %s", *listen)
-	if err := http.ListenAndServe(*listen, mux); err != nil {
+	if err := http.ListenAndServe(*listen, metrics.Middleware(mux)); err != nil {
 		log.Fatal(err)
 	}
 }

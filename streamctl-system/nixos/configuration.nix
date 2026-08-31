@@ -57,6 +57,7 @@
     enable = true;
     listen = "127.0.0.1:8080";
     secretFile = "/var/lib/streamctl/secret";
+    metricsTokenFile = "/var/lib/streamctl/metrics-token";
     # Configure these once rclone has a Spaces remote.
     remote = "spaces:btcpp";
     rcloneConfigFile = "/var/lib/streamctl/rclone.conf";

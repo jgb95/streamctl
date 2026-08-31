@@ -13,7 +13,7 @@
         pname = "streamctl";
         version = "0.1.0";
         src = ./streamctl;
-        vendorHash = "sha256-vJu/Xj72VfUPgbx3HdA673NCmjzv2B/s3qMrBr+QCkE=";
+        vendorHash = "sha256-xul/VcwVEZrNo+ew/b1YmRUfFW4kd1bayNdG163Of7Y=";
         subPackages = [ "cmd" ];
         meta = with pkgs.lib; {
           description = "Schedule pre-recorded RTMP streams via systemd";
@@ -46,6 +46,15 @@
                 File should contain a single line with the secret. Mode 0400, owned by the streamctl user.
               '';
               example = "/var/lib/streamctl/secret";
+            };
+
+            metricsTokenFile = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = ''
+                Optional path to a streamctl-owned 0400 bearer token file.
+                When configured, the Prometheus endpoint is available at /metrics.
+              '';
             };
 
             videoDir = lib.mkOption {
@@ -368,6 +377,11 @@
                 mkdir -p /run/streamctl
                 umask 077
                 echo "STREAMCTL_SECRET=$(cat ${cfg.secretFile})" > /run/streamctl/env
+                ${lib.optionalString (cfg.metricsTokenFile != "") ''
+                  if [ -s ${lib.escapeShellArg cfg.metricsTokenFile} ]; then
+                    echo "STREAMCTL_METRICS_TOKEN=$(cat ${lib.escapeShellArg cfg.metricsTokenFile})" >> /run/streamctl/env
+                  fi
+                ''}
                 chmod 0400 /run/streamctl/env
               '';
             };
