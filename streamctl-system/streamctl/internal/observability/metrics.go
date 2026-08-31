@@ -19,6 +19,10 @@ type Metrics struct {
 	inflight *prometheus.GaugeVec
 }
 
+func (m *Metrics) Register(collector prometheus.Collector) error {
+	return m.registry.Register(collector)
+}
+
 func New(namespace string) *Metrics {
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,

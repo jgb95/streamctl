@@ -367,6 +367,12 @@ type GPUJobQueueItem struct {
 	FinishedAt    *time.Time
 }
 
+type GPUQueueMetrics struct {
+	Counts         map[string]int
+	Attempts       int
+	OldestQueuedAt *time.Time
+}
+
 // ---------- Endpoint queries ----------
 
 func (db *DB) ListEndpoints() ([]Endpoint, error) {
@@ -895,6 +901,42 @@ func (db *DB) GPUQueueStatusCounts() (map[string]int, error) {
 	return out, rows.Err()
 }
 
+// GPUQueueMetrics returns low-cardinality aggregates for Prometheus without
+// exposing raw paths, unit names, or database IDs as labels.
+func (db *DB) GPUQueueMetrics() (GPUQueueMetrics, error) {
+	metrics := GPUQueueMetrics{Counts: map[string]int{}}
+	rows, err := db.Query(`SELECT status, count(*), COALESCE(sum(attempt_count), 0) FROM gpu_job_queue GROUP BY status`)
+	if err != nil {
+		return metrics, err
+	}
+	for rows.Next() {
+		var status string
+		var count, attempts int
+		if err := rows.Scan(&status, &count, &attempts); err != nil {
+			rows.Close()
+			return metrics, err
+		}
+		metrics.Counts[status] = count
+		metrics.Attempts += attempts
+	}
+	if err := rows.Close(); err != nil {
+		return metrics, err
+	}
+	if err := rows.Err(); err != nil {
+		return metrics, err
+	}
+
+	var oldest sql.NullInt64
+	if err := db.QueryRow(`SELECT CAST(strftime('%s', min(created_at)) AS INTEGER) FROM gpu_job_queue WHERE status = 'queued'`).Scan(&oldest); err != nil {
+		return metrics, err
+	}
+	if oldest.Valid {
+		value := time.Unix(oldest.Int64, 0)
+		metrics.OldestQueuedAt = &value
+	}
+	return metrics, nil
+}
+
 func (db *DB) MarkGPUQueueRunning(id int64, unitName string) error {
 	_, err := db.Exec(`
 		UPDATE gpu_job_queue
@@ -961,6 +1003,28 @@ func (db *DB) MarkGPUQueueFinished(rawPath, status, lastError string) error {
 		SET status = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP
 		WHERE raw_path = ? AND status IN ('queued', 'running')
 	`, status, lastError, rawPath)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ResolveGPUQueueFailure clears a failed queue row after its normalized output
+// has been independently verified. Keeping this separate from
+// MarkGPUQueueFinished preserves that method's duplicate-terminal protection.
+func (db *DB) ResolveGPUQueueFailure(rawPath, detail string) error {
+	result, err := db.Exec(`
+		UPDATE gpu_job_queue
+		SET status = 'finished', last_error = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE raw_path = ? AND status = 'failed'
+	`, detail, rawPath)
 	if err != nil {
 		return err
 	}

@@ -189,6 +189,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	metrics := appmetrics.New("streamctl")
+	if err := metrics.Register(appmetrics.NewOperationsCollector(database, sysd)); err != nil {
+		log.Fatalf("registering operations metrics: %v", err)
+	}
 	mux.Handle("/metrics", metrics.Handler(strings.TrimSpace(os.Getenv("STREAMCTL_METRICS_TOKEN"))))
 	h.Register(mux)
 

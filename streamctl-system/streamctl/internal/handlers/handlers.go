@@ -1121,7 +1121,7 @@ func (h *Handler) livestreamFilesClearResolvedFailures(w http.ResponseWriter, r 
 		if err := h.verifyNormalizedOutput(r.Context(), item.RawPath); err != nil {
 			continue
 		}
-		if err := h.DB.MarkGPUQueueFinished(item.RawPath, "finished", "resolved failure; normalized output is ready"); err != nil {
+		if err := h.DB.ResolveGPUQueueFailure(item.RawPath, "resolved failure; normalized output is ready"); err != nil {
 			log.Printf("clearing resolved failed GPU job %s failed: %v", item.RawPath, err)
 			continue
 		}

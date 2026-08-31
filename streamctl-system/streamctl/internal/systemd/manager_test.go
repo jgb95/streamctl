@@ -77,3 +77,23 @@ func TestRunScriptReportsBTCPPBroadcastLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamServiceEnablesIPAccounting(t *testing.T) {
+	m := &Manager{RunUser: "streamctl", VideoDir: "/videos", CacheDir: "/cache", HLSDir: "/hls"}
+	unit := m.renderService(&db.Stream{ID: 7, Name: "A talk"})
+	if !strings.Contains(unit, "IPAccounting=true") {
+		t.Fatalf("stream service did not enable network accounting:\n%s", unit)
+	}
+}
+
+func TestParseStreamRuntime(t *testing.T) {
+	runtime := parseStreamRuntime("ActiveState=active\nResult=success\nIPIngressBytes=123\nIPEgressBytes=456\n")
+	if !runtime.Active || runtime.Failed || runtime.Result != "success" || runtime.IngressBytes != 123 || runtime.EgressBytes != 456 {
+		t.Fatalf("unexpected runtime: %#v", runtime)
+	}
+
+	failed := parseStreamRuntime("ActiveState=failed\nResult=exit-code\nIPIngressBytes=[not set]\nIPEgressBytes=[not set]\n")
+	if failed.Active || !failed.Failed || failed.IngressBytes != 0 || failed.EgressBytes != 0 {
+		t.Fatalf("unexpected failed runtime: %#v", failed)
+	}
+}

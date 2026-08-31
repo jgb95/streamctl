@@ -20,6 +20,28 @@ host expects `/var/lib/streamctl/metrics-token`, mode `0400`, owned by
 `streamctl:streamctl`. Route labels use bounded ServeMux patterns rather than
 raw URLs.
 
+The endpoint also exports operational metrics for the streaming and GPU
+pipelines:
+
+- configured, enabled, active, and failed streams;
+- per-stream ingress and egress byte counters using systemd `IPAccounting`;
+- per-destination egress estimates derived from each stream's cgroup total;
+- the next trigger for each scheduled stream and enabled destination counts;
+- GPU jobs by queue state, total attempts, and oldest queued-job age.
+
+Generated stream services enable `IPAccounting=true`. The per-stream byte
+counters reset for each ffmpeg activation; Prometheus handles that reset when
+calculating `rate(streamctl_stream_egress_bytes_total[...])`. Stream names and
+database IDs are the only per-stream labels. GPU raw paths and unit names are
+never exported as labels.
+
+Because ffmpeg's tee muxer does not report byte counters for each slave output,
+`streamctl_stream_destination_egress_bytes_estimate_total` divides the measured
+service egress evenly among its enabled remote destinations. This is a useful
+bandwidth allocation estimate because every output receives the same copied
+media stream, but it cannot detect one stalled destination while another keeps
+flowing. Labels contain destination names and types, never URLs or stream keys.
+
 ```
 streamctl-system/
 ├── Makefile                          # main entry point — `make` for help

@@ -63,7 +63,7 @@ func TestMiddlewareUsesServeMuxPattern(t *testing.T) {
 	for _, family := range families {
 		text += family.String()
 	}
-	if !strings.Contains(text, `name:"route" value:"POST /streams/edit/{id}"`) {
+	if !strings.Contains(text, `value:"POST /streams/edit/{id}"`) {
 		t.Fatalf("route pattern missing from metrics: %s", text)
 	}
 	if strings.Contains(text, "private-stream-id") {

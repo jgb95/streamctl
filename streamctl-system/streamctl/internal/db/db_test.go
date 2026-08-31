@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStreamPersistsBTCPPRecordingID(t *testing.T) {
@@ -80,6 +81,40 @@ func TestGPUQueueTracksAttemptsAndErrors(t *testing.T) {
 	}
 }
 
+func TestGPUQueueMetrics(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	queued, err := database.EnqueueGPUJob("queued.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := database.EnqueueGPUJob("running.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueRunning(running.ID, "streamctl-gpu-running.service"); err != nil {
+		t.Fatal(err)
+	}
+
+	metrics, err := database.GPUQueueMetrics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Counts["queued"] != 1 || metrics.Counts["running"] != 1 || metrics.Attempts != 1 {
+		t.Fatalf("unexpected queue metrics: %#v", metrics)
+	}
+	if metrics.OldestQueuedAt == nil || time.Since(*metrics.OldestQueuedAt) < 0 {
+		t.Fatalf("missing oldest queued timestamp for item %#v: %#v", queued, metrics)
+	}
+}
+
 func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
 	if err != nil {
@@ -102,6 +137,38 @@ func TestMarkGPUQueueFinishedReportsNoOpenRow(t *testing.T) {
 	}
 	if err := database.MarkGPUQueueFinished(item.RawPath, "failed", "duplicate terminal event"); err != sql.ErrNoRows {
 		t.Fatalf("expected sql.ErrNoRows for duplicate terminal update, got %v", err)
+	}
+}
+
+func TestResolveGPUQueueFailure(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := database.EnqueueGPUJob("failed.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueRunning(item.ID, "streamctl-gpu-failed.service"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkGPUQueueFinished(item.RawPath, "failed", "worker exited"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResolveGPUQueueFailure(item.RawPath, "verified output"); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := database.GetGPUQueueItemByRawPath(item.RawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != "finished" || resolved.LastError != "verified output" {
+		t.Fatalf("unexpected resolved queue item: %#v", resolved)
 	}
 }
 
