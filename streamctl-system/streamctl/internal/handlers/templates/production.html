@@ -1,0 +1,10 @@
+{{define "production.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<style>
+.production-tools{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.production-tool{display:block;padding:17px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text);text-decoration:none}.production-tool:hover{border-color:var(--accent)}.production-tool strong,.production-tool span{display:block}.production-tool strong{font-size:16px}.production-tool span{color:var(--muted);margin-top:6px}.production-tool.soon{opacity:.55;pointer-events:none}
+</style>
+{{template "productionNav" .Nav}}
+<h2 style="margin-bottom:4px">Production</h2><p class="muted" style="margin-top:0;margin-bottom:20px">Prepare conference media in small, focused workspaces.</p>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<div class="production-tools"><a class="production-tool" href="/production/media{{if .Nav.Conference}}?conference={{urlquery .Nav.Conference}}{{end}}"><strong>Browse media</strong><span>Inspect an event’s recordings workspace in Spaces.</span></a><a class="production-tool" href="/production/timestamp{{if .Nav.Conference}}?conference={{urlquery .Nav.Conference}}{{end}}"><strong>Timestamp talks</strong><span>Locate the reusable source ranges for each scheduled talk.</span></a><div class="production-tool soon"><strong>Talk recipes</strong><span>Assemble individual talk segments for conf-render. Coming next.</span></div><div class="production-tool soon"><strong>Livestream recipes</strong><span>Build daily stage timelines from timestamped talks. Coming next.</span></div><div class="production-tool soon"><strong>Editor</strong><span>Assemble other segment-based conf-render projects. Coming later.</span></div></div>
+{{end}}

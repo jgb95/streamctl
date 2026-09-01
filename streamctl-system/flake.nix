@@ -114,13 +114,13 @@
             btcppAPIBaseURL = lib.mkOption {
               type = lib.types.str;
               default = "https://btcpp.dev";
-              description = "Bitcoin++ API base URL used for public broadcast status.";
+              description = "Bitcoin++ API base URL used by production workspaces and for public broadcast status.";
             };
 
             btcppAPITokenFile = lib.mkOption {
               type = lib.types.str;
               default = "";
-              description = "Streamctl-owned 0400 Bitcoin++ machine token with recordings:write.";
+              description = "Streamctl-owned 0400 Bitcoin++ machine token used by production workspaces and broadcast status.";
             };
 
             gpuWorkerHost = lib.mkOption {

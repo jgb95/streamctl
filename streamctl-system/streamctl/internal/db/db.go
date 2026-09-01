@@ -143,6 +143,21 @@ CREATE TABLE IF NOT EXISTS render_job_queue (
 	started_at DATETIME,
 	finished_at DATETIME
 );
+
+CREATE TABLE IF NOT EXISTS production_cuts (
+	conference TEXT NOT NULL,
+	talk_id TEXT NOT NULL,
+	position INTEGER NOT NULL CHECK (position >= 0),
+	source_object_key TEXT NOT NULL,
+	source_type TEXT NOT NULL DEFAULT 'video' CHECK (source_type IN ('video', 'chunkedVideo')),
+	in_ms INTEGER NOT NULL CHECK (in_ms >= 0),
+	out_ms INTEGER NOT NULL CHECK (out_ms > in_ms),
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (conference, talk_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS production_cuts_conference_idx ON production_cuts (conference, talk_id, position);
+
 `
 
 func (db *DB) Migrate() error {

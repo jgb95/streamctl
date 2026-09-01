@@ -1,0 +1,13 @@
+{{define "production_talks.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<style>
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}.page-head h2{margin:0 0 3px}.talk-list{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:7px;overflow:hidden}.talk-row{display:flex;align-items:center;gap:14px;padding:13px 15px;background:var(--panel);border-bottom:1px solid var(--border);color:var(--text);text-decoration:none}.talk-row:last-child{border-bottom:0}.talk-row:hover{background:rgba(110,168,254,.08)}.talk-copy{min-width:0;flex:1}.talk-copy strong,.talk-copy span{display:block}.talk-copy span{color:var(--muted);font-size:12px;margin-top:3px}.talk-state{white-space:nowrap;color:var(--warn);font-size:12px}.talk-state.done{color:var(--success)}
+@media(max-width:700px){.page-head .actions{width:100%}.page-head .btn{flex:1;text-align:center}.talk-row{align-items:flex-start}.talk-state{white-space:normal}}
+</style>
+{{template "productionNav" .Nav}}
+<div class="page-head"><div><h2>Timestamp talks</h2><div class="muted">Locate reusable source ranges before assembling render recipes.</div></div>{{if .Conference}}<div class="actions"><a class="btn" href="/production/media?conference={{urlquery .Conference}}">Browse media</a></div>{{end}}</div>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+{{if .Conference}}
+<div class="talk-list">{{range .Talks}}<a class="talk-row" href="{{.URL}}"><div class="talk-copy"><strong>{{.Title}}</strong><span>{{if .StartsAt}}{{.StartsAt}} · {{end}}{{if .Venue}}{{.Venue}}{{end}}{{range .Speakers}} · {{.Name}}{{end}}</span></div>{{if .CutCount}}<span class="talk-state done">{{.CutCount}} cut{{if ne .CutCount 1}}s{{end}} ✓</span>{{else}}<span class="talk-state">Needs cut</span>{{end}}</a>{{else}}{{if not .Error}}<div class="preview-empty"><h3>No candidate talks</h3><p>No talks are ready for recording work in this conference.</p></div>{{end}}{{end}}</div>
+{{else}}<div class="preview-empty"><h3>Choose a conference</h3><p>The talk list will appear here.</p></div>{{end}}
+{{end}}

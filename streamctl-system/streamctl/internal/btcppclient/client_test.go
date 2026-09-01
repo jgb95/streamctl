@@ -12,22 +12,35 @@ import (
 
 func TestClientListsCandidatesAndNeverPlacesTokenInURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/conferences/dev26/recording-candidates" {
-			t.Errorf("path=%q", r.URL.Path)
-		}
 		if r.URL.RawQuery != "" {
 			t.Errorf("query leaked data: %q", r.URL.RawQuery)
 		}
 		if r.Header.Get("Authorization") != "Bearer secret-token" {
 			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"talk_id": "talk-1", "title": "A talk", "eligible": true}}})
+		switch r.URL.Path {
+		case "/api/v1/conferences/dev26/recording-candidates":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"talk_id": "talk-1", "title": "A talk", "eligible": true,
+					"speakers": []map[string]any{{"person_id": "person-1", "name": "Ada", "company": "Babbage"}},
+				}},
+			})
+		case "/api/v1/conferences":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "conference-1", "tag": "dev26", "description": "Dev++"}}})
+		default:
+			t.Errorf("path=%q", r.URL.Path)
+		}
 	}))
 	defer server.Close()
 	client := &Client{BaseURL: server.URL, Token: "secret-token", HTTPClient: server.Client()}
 	candidates, err := client.RecordingCandidates(context.Background(), "dev26")
-	if err != nil || len(candidates) != 1 || candidates[0].TalkID != "talk-1" {
+	if err != nil || len(candidates) != 1 || candidates[0].TalkID != "talk-1" || len(candidates[0].Speakers) != 1 || candidates[0].Speakers[0].Name != "Ada" {
 		t.Fatalf("candidates=%+v err=%v", candidates, err)
+	}
+	conferences, err := client.Conferences(context.Background())
+	if err != nil || len(conferences) != 1 || conferences[0].Tag != "dev26" {
+		t.Fatalf("conferences=%+v err=%v", conferences, err)
 	}
 }
 

@@ -21,6 +21,17 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+type Conference struct {
+	ID          string  `json:"id"`
+	Tag         string  `json:"tag"`
+	Description string  `json:"description"`
+	Tagline     string  `json:"tagline"`
+	Location    string  `json:"location"`
+	Venue       string  `json:"venue"`
+	StartsAt    *string `json:"starts_at"`
+	EndsAt      *string `json:"ends_at"`
+}
+
 type Candidate struct {
 	TalkID          string     `json:"talk_id"`
 	Title           string     `json:"title"`
@@ -28,10 +39,17 @@ type Candidate struct {
 	StartsAt        *string    `json:"starts_at"`
 	EndsAt          *string    `json:"ends_at"`
 	Venue           string     `json:"venue"`
+	Speakers        []Speaker  `json:"speakers"`
 	RecordingPolicy string     `json:"recording_policy"`
 	Eligible        bool       `json:"eligible"`
 	Reasons         []string   `json:"reasons"`
 	Recording       *Recording `json:"recording"`
+}
+
+type Speaker struct {
+	PersonID string `json:"person_id"`
+	Name     string `json:"name"`
+	Company  string `json:"company"`
 }
 
 type Recording struct {
@@ -100,6 +118,14 @@ func (client *Client) RecordingCandidates(ctx context.Context, conference string
 	var response []Candidate
 	path := "/api/v1/conferences/" + url.PathEscape(strings.TrimSpace(conference)) + "/recording-candidates"
 	if err := client.do(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (client *Client) Conferences(ctx context.Context) ([]Conference, error) {
+	var response []Conference
+	if err := client.do(ctx, http.MethodGet, "/api/v1/conferences", nil, &response); err != nil {
 		return nil, err
 	}
 	return response, nil

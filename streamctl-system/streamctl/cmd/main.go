@@ -66,8 +66,8 @@ func main() {
 		btcppOAuthClientID  = flag.String("btcpp-oauth-client-id", "", "registered Bitcoin++ OAuth client ID")
 		btcppOAuthSecret    = flag.String("btcpp-oauth-client-secret-file", "", "path to a private Bitcoin++ OAuth client secret file")
 		btcppOAuthRedirect  = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
-		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used for broadcast status")
-		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token used for broadcast status")
+		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used by production workspaces and broadcast status")
+		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token")
 		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerCommand    = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		renderWorkerCommand = flag.String("render-worker-command", "/root/render-from-spaces.py", "render wrapper command on the GPU worker")
@@ -115,6 +115,14 @@ func main() {
 	}
 	if secret == "" && oauthClient == nil {
 		log.Fatal("configure Bitcoin++ OAuth or set STREAMCTL_SECRET for break-glass access")
+	}
+	var btcppAPIClient *btcppclient.Client
+	if strings.TrimSpace(*btcppAPITokenFile) != "" {
+		token, err := btcppclient.TokenFromFile(*btcppAPITokenFile)
+		if err != nil {
+			log.Fatalf("configure Bitcoin++ production API: %v", err)
+		}
+		btcppAPIClient = &btcppclient.Client{BaseURL: *btcppAPIBase, Token: token}
 	}
 
 	database, err := db.Open(*dbPath)
@@ -189,6 +197,7 @@ func main() {
 		GPUDestroyAfterJob:  *gpuDestroyAfterJob,
 		Systemd:             sysd,
 		OAuth:               oauthClient,
+		BTCPP:               btcppAPIClient,
 	}
 
 	mux := http.NewServeMux()

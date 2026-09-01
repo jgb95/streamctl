@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"streamctl/internal/btcppclient"
 	"streamctl/internal/btcppoauth"
 	"streamctl/internal/db"
 	"streamctl/internal/doclient"
@@ -77,9 +78,17 @@ type Handler struct {
 	GPUDestroyAfterJob  bool
 	Systemd             *systemd.Manager
 	OAuth               *btcppoauth.Client
+	BTCPP               productionCandidatesClient
 
-	funcs      template.FuncMap
-	gpuQueueMu sync.Mutex
+	funcs          template.FuncMap
+	gpuQueueMu     sync.Mutex
+	mediaInfoMu    sync.Mutex
+	mediaInfoCache map[string]logicalMediaInfo
+}
+
+type productionCandidatesClient interface {
+	Conferences(context.Context) ([]btcppclient.Conference, error)
+	RecordingCandidates(context.Context, string) ([]btcppclient.Candidate, error)
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -112,6 +121,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/logs/", h.auth(http.HandlerFunc(h.streamLogs)))
 	mux.Handle("/streams/preview/", h.auth(http.HandlerFunc(h.streamPreview)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
+	mux.Handle("/production", h.auth(http.HandlerFunc(h.productionHome)))
+	mux.Handle("/production/timestamp", h.auth(http.HandlerFunc(h.productionTimestamp)))
+	mux.Handle("/production/timestamp/cut", h.auth(http.HandlerFunc(h.productionCut)))
+	mux.Handle("/production/media", h.auth(http.HandlerFunc(h.mediaWorkspace)))
+	mux.Handle("/production/media/browse", h.auth(http.HandlerFunc(h.mediaBrowse)))
+	mux.Handle("/production/media/info", h.auth(http.HandlerFunc(h.mediaInfo)))
+	mux.Handle("/production/media/open", h.auth(http.HandlerFunc(h.mediaOpen)))
+	mux.Handle("/production/cuts/save", h.mutation(http.HandlerFunc(h.productionCutsSave)))
 	mux.Handle("/normalize", h.auth(http.HandlerFunc(h.normalizationFiles)))
 	mux.Handle("/normalize/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
 	mux.Handle("/normalize/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
@@ -1707,7 +1724,6 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	h.gpuQueueMu.Lock()
 	defer h.gpuQueueMu.Unlock()
 	if !h.gpuWorkerConfigured() {
-		log.Printf("GPU queue dispatch skipped: GPU worker is not configured")
 		return
 	}
 	worker := h.gpuWorkerView(ctx)
@@ -3223,9 +3239,7 @@ func (h *Handler) rcloneLsf(ctx context.Context, prefix string, extraArgs ...str
 	args := []string{"lsf", h.remotePath(prefix)}
 	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(ctx, "rclone", args...)
-	if strings.TrimSpace(h.RcloneConfig) != "" {
-		cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+h.RcloneConfig)
-	}
+	cmd.Env = rcloneEnv(h.RcloneConfig)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -3246,9 +3260,7 @@ func (h *Handler) rcloneLsl(ctx context.Context, prefix string) ([]string, error
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "rclone", "lsl", h.remotePath(prefix))
-	if strings.TrimSpace(h.RcloneConfig) != "" {
-		cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+h.RcloneConfig)
-	}
+	cmd.Env = rcloneEnv(h.RcloneConfig)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -3269,9 +3281,7 @@ func (h *Handler) rcloneCat(ctx context.Context, prefix string) ([]byte, error) 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "rclone", "cat", h.remotePath(prefix))
-	if strings.TrimSpace(h.RcloneConfig) != "" {
-		cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+h.RcloneConfig)
-	}
+	cmd.Env = rcloneEnv(h.RcloneConfig)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -3281,6 +3291,28 @@ func (h *Handler) rcloneCat(ctx context.Context, prefix string) ([]byte, error) 
 		return nil, fmt.Errorf("rclone cat %s: %s", prefix, msg)
 	}
 	return out, nil
+}
+
+// rcloneEnv prevents personal shell filters from silently changing the files
+// streamctl can see. Credentials and other rclone settings remain inherited.
+func rcloneEnv(config string) []string {
+	blocked := map[string]bool{
+		"RCLONE_FILTER": true, "RCLONE_FILTER_FROM": true,
+		"RCLONE_INCLUDE": true, "RCLONE_INCLUDE_FROM": true,
+		"RCLONE_EXCLUDE": true, "RCLONE_EXCLUDE_FROM": true,
+		"RCLONE_FILES_FROM": true, "RCLONE_FILES_FROM_RAW": true,
+	}
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		name, _, _ := strings.Cut(item, "=")
+		if !blocked[name] {
+			env = append(env, item)
+		}
+	}
+	if strings.TrimSpace(config) != "" {
+		env = append(env, "RCLONE_CONFIG="+config)
+	}
+	return env
 }
 
 func (h *Handler) spacesFileExists(ctx context.Context, filePath string) (bool, error) {

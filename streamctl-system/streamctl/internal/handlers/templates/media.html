@@ -1,0 +1,16 @@
+{{define "media.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<style>
+.media-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}.media-head h2{margin:0 0 4px}.crumbs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0;color:var(--muted)}.media-list{border:1px solid var(--border);border-radius:7px;overflow:hidden;background:var(--panel)}.media-row{display:flex;align-items:center;gap:12px;padding:11px 13px;border-bottom:1px solid var(--border);color:var(--text);text-decoration:none}.media-row:last-child{border-bottom:0}.media-row:hover{background:rgba(110,168,254,.08)}.media-kind{width:55px;flex:0 0 55px;color:var(--muted);font-size:11px;text-transform:uppercase}.media-name{min-width:0;overflow-wrap:anywhere}.media-path{margin-left:auto;color:var(--muted);font-size:11px}.section-label{margin:18px 0 7px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+@media(max-width:700px){.media-head .actions{width:100%}.media-head .btn{flex:1;text-align:center}.media-path{display:none}.media-row{align-items:flex-start}}
+</style>
+{{template "productionNav" .Nav}}
+<div class="media-head"><div><h2>Media</h2><div class="muted">Browse an event’s <code>recordings/</code> workspace in Spaces.</div></div>{{if .Conference}}<div class="actions"><a class="btn" href="/production/timestamp?conference={{urlquery .Conference}}">Timestamp talks</a></div>{{end}}</div>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+{{if .Conference}}
+<nav class="crumbs">{{range $i,$crumb := .Breadcrumbs}}{{if $i}}<span>/</span>{{end}}<a href="{{$crumb.URL}}">{{$crumb.Name}}</a>{{end}}</nav>
+{{if .Dirs}}<div class="section-label">Folders</div><div class="media-list">{{range .Dirs}}<a class="media-row" href="/production/media?conference={{urlquery $.Conference}}&amp;prefix={{urlquery .Path}}"><span class="media-kind">Folder</span><strong class="media-name">{{.Name}}</strong><span class="media-path">{{.Path}}</span></a>{{end}}</div>{{end}}
+{{if .Files}}<div class="section-label">Files</div><div class="media-list">{{range .Files}}<a class="media-row" href="/production/media/open?conference={{urlquery $.Conference}}&amp;path={{urlquery .Path}}" target="_blank"><span class="media-kind">{{if eq .SourceType "chunkedVideo"}}Sequence{{else}}File{{end}}</span><span class="media-name">{{.Name}}</span><span class="media-path">{{if .Chunks}}{{len .Chunks}} chunks · {{end}}Open ↗</span></a>{{end}}</div>{{end}}
+{{if and (not .Error) (not .Dirs) (not .Files)}}<div class="preview-empty"><h3>Empty folder</h3><p>No files or folders were found at this path.</p></div>{{end}}
+{{else}}<div class="preview-empty"><h3>Choose a conference</h3><p>Its recordings folders and files will appear here.</p></div>{{end}}
+{{end}}

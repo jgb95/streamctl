@@ -39,6 +39,7 @@ This means scheduled streams keep running even if the web app is restarted or cr
 -btcpp-oauth-client-id            confidential OAuth client ID
 -btcpp-oauth-client-secret-file   path to the OAuth client secret (mode 0400)
 -btcpp-oauth-redirect-url         callback URL (defaults from -public-base-url)
+-btcpp-api-token-file             API token used by the timestamp workspace (mode 0400)
 ```
 
 Interactive access uses Bitcoin++ OAuth and is restricted to accounts whose
@@ -73,6 +74,17 @@ make build     # nix build .#streamctl
 make run-local # runs on :8080 with /tmp/streamctl-local/ as data dir
 ```
 
+To exercise the timestamp workspace with the real API and Spaces previews:
+
+```bash
+BTCPP_API_TOKEN_FILE=/path/to/btcpp-api-token \
+STREAMCTL_REMOTE=btcpp:btcpp \
+make run-local
+```
+
+Set `RCLONE_CONFIG_FILE=/path/to/rclone.conf` too when the remote is not in
+rclone's default configuration file.
+
 `run-local` uses a non-system data directory and writes "fake" unit files to a temp dir (you won't have permission to write to `/etc/systemd/system` as a normal user). The UI works for testing forms and rendering, but enabling timers will fail since `systemctl` calls won't have permission.
 
 For end-to-end testing of the systemd integration, deploy to a VM (or to the droplet via `make deploy`).
@@ -90,6 +102,18 @@ The token is read from that file and is never accepted as a CLI argument.
 This service credential is intentionally separate from interactive OAuth login:
 the PAT belongs to the streamctl automation, while OAuth sessions identify the
 human administrator operating the UI.
+
+Set `services.streamctl.btcppAPITokenFile` to that path to enable the
+**Production → Timestamp** workspace. The workspace reads eligible talks from
+Bitcoin++, presents a conference selector and talk list, and keeps source
+paths and cuts in streamctl's SQLite database. Media is selected directly from
+the event browser; numbered chunk sequences are grouped automatically and do
+not need to be registered. **Production → Media** provides a browser rooted at
+each conference's `<conference>/recordings/` folder in Spaces. When matching
+vMix logs are present beside a recording in a `logs/` folder, streamctl uses
+their restart interval and total duration to construct a chunked timeline
+without scanning the video. Other media still opens directly, with reduced
+sequence-wide seeking when no timing metadata is available.
 
 Discover eligible talks and their recording-consent policy:
 

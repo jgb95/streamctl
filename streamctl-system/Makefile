@@ -160,13 +160,17 @@ run-local: build ## Run streamctl locally on :8080 with a test config.
 	@if [ ! -e /tmp/streamctl-local/secret ]; then \
 	  echo "test-secret" > /tmp/streamctl-local/secret; \
 	fi
-	STREAMCTL_SECRET=$$(cat /tmp/streamctl-local/secret) ./result/bin/cmd \
+	@set -- \
 	  -listen :8080 \
 	  -db /tmp/streamctl-local/streamctl.db \
 	  -video-dir /tmp/streamctl-local/videos \
 	  -unit-dir /tmp/streamctl-local \
 	  -unit-prefix test- \
-	  -run-user $$USER
+	  -run-user "$$USER"; \
+	if [ -n "$${BTCPP_API_TOKEN_FILE:-}" ]; then set -- "$$@" -btcpp-api-token-file "$$BTCPP_API_TOKEN_FILE"; fi; \
+	if [ -n "$${STREAMCTL_REMOTE:-}" ]; then set -- "$$@" -remote "$$STREAMCTL_REMOTE"; fi; \
+	if [ -n "$${RCLONE_CONFIG_FILE:-}" ]; then set -- "$$@" -rclone-config "$$RCLONE_CONFIG_FILE"; fi; \
+	STREAMCTL_SECRET=$$(cat /tmp/streamctl-local/secret) ./result/bin/cmd "$$@"
 
 # ---------- ops ----------
 
