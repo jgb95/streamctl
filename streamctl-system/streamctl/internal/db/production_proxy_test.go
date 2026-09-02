@@ -16,7 +16,7 @@ func TestProductionProxyQueueLifecycleAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := "toronto/recordings/raw/mix/toronto_01main_100431_0000.mp4"
-	proxy := "toronto/recordings/production/proxies/mix/toronto_01main_100431.mp4"
+	proxy := "toronto/recordings/workspace/proxies/mix/toronto_01main_100431.mp4"
 	job, queued, err := database.EnqueueProductionProxyJob(source, proxy)
 	if err != nil || !queued || job.Status != "queued" {
 		t.Fatalf("enqueue job=%+v queued=%v err=%v", job, queued, err)

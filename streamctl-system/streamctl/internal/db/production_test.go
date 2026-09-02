@@ -21,8 +21,8 @@ func productionTestDB(t *testing.T) *DB {
 func TestProductionCutsReplaceOrderedRanges(t *testing.T) {
 	database := productionTestDB(t)
 	cuts := []ProductionCut{
-		{Source: "toronto/recordings/main/day-1_0000.mp4", SourceType: "chunkedVideo", InMS: 1000, OutMS: 2000},
-		{Source: "toronto/recordings/main/day-1.mp4", SourceType: "video", InMS: 3000, OutMS: 4500},
+		{Source: "toronto/recordings/raw/mix/day-1_0000.mp4", SourceType: "chunkedVideo", InMS: 1000, OutMS: 2000},
+		{Source: "toronto/recordings/raw/mix/day-1.mp4", SourceType: "video", InMS: 3000, OutMS: 4500},
 	}
 	if err := database.ReplaceProductionCuts("toronto", "talk-1", cuts); err != nil {
 		t.Fatal(err)

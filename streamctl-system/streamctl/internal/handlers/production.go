@@ -521,7 +521,7 @@ func (h *Handler) listMediaSpacesPrefix(ctx context.Context, prefix string) ([]s
 		}
 	}
 	files := groupMediaFiles(prefix, names)
-	if strings.Contains(prefix, "/recordings/production/") {
+	if strings.Contains(prefix, "/recordings/workspace/") {
 		for i := range files {
 			files[i].SourceType = ""
 		}

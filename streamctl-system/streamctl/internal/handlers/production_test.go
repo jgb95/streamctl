@@ -44,7 +44,7 @@ func productionHandlerTestDB(t *testing.T) *db.DB {
 
 func TestProductionWorkspaceLoadsCandidatesAndCuts(t *testing.T) {
 	database := productionHandlerTestDB(t)
-	if err := database.ReplaceProductionCuts("toronto", "talk-1", []db.ProductionCut{{Source: "toronto/recordings/main/day-1.mp4", SourceType: "video", InMS: 1000, OutMS: 2000}}); err != nil {
+	if err := database.ReplaceProductionCuts("toronto", "talk-1", []db.ProductionCut{{Source: "toronto/recordings/raw/mix/day-1.mp4", SourceType: "video", InMS: 1000, OutMS: 2000}}); err != nil {
 		t.Fatal(err)
 	}
 	h := &Handler{
@@ -223,7 +223,7 @@ func TestMediaWorkspaceRejectsCrossConferencePrefix(t *testing.T) {
 }
 
 func TestGroupMediaFilesUsesGeneralizedConfRenderChunkRule(t *testing.T) {
-	files := groupMediaFiles("toronto/recordings/main/", []string{
+	files := groupMediaFiles("toronto/recordings/raw/mix/", []string{
 		"camera-0000.mp4", "camera-0001.mp4", "camera-0002.mp4", "single.mp4", "notes.json",
 	})
 	if len(files) != 3 {
@@ -235,7 +235,7 @@ func TestGroupMediaFilesUsesGeneralizedConfRenderChunkRule(t *testing.T) {
 			sequence = &files[i]
 		}
 	}
-	if sequence == nil || sequence.Path != "toronto/recordings/main/camera-0000.mp4" || len(sequence.Chunks) != 3 {
+	if sequence == nil || sequence.Path != "toronto/recordings/raw/mix/camera-0000.mp4" || len(sequence.Chunks) != 3 {
 		t.Fatalf("sequence=%+v", sequence)
 	}
 }
@@ -249,19 +249,19 @@ func TestGroupMediaFilesReturnsEmptyJSONArray(t *testing.T) {
 
 func TestProductionProxyObjectKeyMirrorsSourceDirectory(t *testing.T) {
 	source := mediaFile{Path: "toronto/recordings/raw/mix/toronto_01main_100431_0000.mp4", SourceType: "chunkedVideo"}
-	if got, want := productionProxyObjectKey("toronto", source), "toronto/recordings/production/proxies/raw/mix/toronto_01main_100431.mp4"; got != want {
+	if got, want := productionProxyObjectKey("toronto", source), "toronto/recordings/workspace/proxies/raw/mix/toronto_01main_100431.mp4"; got != want {
 		t.Fatalf("proxy=%q want %q", got, want)
 	}
-	legacy := mediaFile{Path: "toronto/recordings/main/mix/day 1/camera0000.mp4", SourceType: "chunkedVideo"}
-	if got, want := productionProxyObjectKey("toronto", legacy), "toronto/recordings/production/proxies/main/mix/day 1/camera.mp4"; got != want {
-		t.Fatalf("legacy proxy=%q want %q", got, want)
+	standalone := mediaFile{Path: "toronto/recordings/raw/mix/talks.mp4", SourceType: "video"}
+	if got, want := productionProxyObjectKey("toronto", standalone), "toronto/recordings/workspace/proxies/raw/mix/talks.mp4"; got != want {
+		t.Fatalf("standalone proxy=%q want %q", got, want)
 	}
 }
 
 func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsDerivedMedia(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'mix/camera0000.mp4\\nmix/camera0001.mp4\\nmix/single.mov\\nproduction/proxies/old.mp4\\nedits/talks/final.mp4\\nassets/bumper.mp4\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/camera0000.mp4\\nraw/mix/camera0001.mp4\\nraw/mix/single.mov\\nworkspace/proxies/old.mp4\\nedits/talks/final.mp4\\nassets/bumper.mp4\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -270,7 +270,7 @@ func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsDerivedMedia(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sources) != 2 || sources[0].Path != "toronto/recordings/mix/camera0000.mp4" || sources[0].SourceType != "chunkedVideo" || sources[1].Path != "toronto/recordings/mix/single.mov" {
+	if len(sources) != 2 || sources[0].Path != "toronto/recordings/raw/mix/camera0000.mp4" || sources[0].SourceType != "chunkedVideo" || sources[1].Path != "toronto/recordings/raw/mix/single.mov" {
 		t.Fatalf("sources=%+v", sources)
 	}
 }
@@ -283,7 +283,7 @@ func TestLogicalMediaInfoRequiresEditingProxy(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	h := &Handler{Remote: "btcpp:btcpp"}
-	info, err := h.logicalMediaInfo(context.Background(), "toronto/recordings/main/camera0000.mp4")
+	info, err := h.logicalMediaInfo(context.Background(), "toronto/recordings/raw/mix/camera0000.mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestLogicalMediaInfoUsesFinishedEditingProxy(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	database := productionHandlerTestDB(t)
 	source := "toronto/recordings/raw/mix/camera0000.mp4"
-	proxy := "toronto/recordings/production/proxies/raw/mix/camera.mp4"
+	proxy := "toronto/recordings/workspace/proxies/raw/mix/camera.mp4"
 	job, _, err := database.EnqueueProductionProxyJob(source, proxy)
 	if err != nil {
 		t.Fatal(err)

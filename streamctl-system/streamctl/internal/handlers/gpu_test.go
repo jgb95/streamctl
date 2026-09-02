@@ -24,7 +24,7 @@ func TestGPUFailureJournalSummaryReturnsLastNonblankLines(t *testing.T) {
 
 func TestReconcileStaleGPUQueueDoesNotRequeueWhileWorkerIsStarting(t *testing.T) {
 	database := openGPUQueueTestDB(t)
-	item, err := database.EnqueueGPUJob("toronto/recordings/edits/livestream/day1.mp4")
+	item, err := database.EnqueueGPUJob("toronto/recordings/edits/livestreams/day1.mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestReconcileStaleGPUQueueDoesNotRequeueWhileWorkerIsStarting(t *testing.T)
 
 func TestReconcileStaleGPUQueueRequeuesWhenManagedWorkerIsGone(t *testing.T) {
 	database := openGPUQueueTestDB(t)
-	item, err := database.EnqueueGPUJob("toronto/recordings/edits/livestream/day1.mp4")
+	item, err := database.EnqueueGPUJob("toronto/recordings/edits/livestreams/day1.mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestRemoteGPUTranscodeCommandLocksDuplicateFallbackLaunches(t *testing.T) {
 		t.Fatal(err)
 	}
 	unit := "streamctl-gpu-lock-test.service"
-	remote := remoteGPUTranscodeCommand(unit, worker, "toronto/recordings/edits/livestream/day1.mp4")
+	remote := remoteGPUTranscodeCommand(unit, worker, "toronto/recordings/edits/livestreams/day1.mp4")
 	run := func() {
 		cmd := exec.Command("bash", "-c", remote)
 		cmd.Env = append(os.Environ(), "STREAMCTL_GPU_JOB_ROOT="+root)

@@ -23,7 +23,7 @@ import (
 	"streamctl/internal/db"
 )
 
-const productionProxyDirectory = "production/proxies"
+const productionProxyDirectory = "workspace/proxies"
 
 func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request) {
 	conference := strings.TrimSpace(r.FormValue("conference"))
@@ -106,7 +106,7 @@ func (h *Handler) logicalMediaSourcesRecursive(ctx context.Context, prefix strin
 }
 
 func isDerivedRecordingPath(objectKey string) bool {
-	for _, marker := range []string{"/recordings/production/", "/recordings/edits/", "/recordings/normalized/", "/recordings/assets/"} {
+	for _, marker := range []string{"/recordings/workspace/", "/recordings/edits/", "/recordings/normalized/", "/recordings/assets/"} {
 		if strings.Contains(objectKey, marker) {
 			return true
 		}
