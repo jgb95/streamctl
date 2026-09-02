@@ -118,13 +118,18 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Previous", "Next", `"inMs":1000`, "All talks", "global-seek", "/production/media/info", "locateChunk", "loadChunk", "timing unavailable", ".editor video[hidden]{display:none}"} {
+	for _, want := range []string{"Second", "Previous", "Next", `"inMs":1000`, "All talks", "global-seek", "/production/media/info", "proxyPath", "Editing proxy", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}
 	}
 	if strings.Contains(body, "Select a talk") {
 		t.Fatalf("dedicated cutter retained placeholder: %s", body)
+	}
+	for _, unwanted := range []string{"next-chunk", "/production/media/preview", "Timed out waiting for video", "locateChunk", "loadChunk", "pendingSeek", "#t="} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("direct cutter retained %q: %s", unwanted, body)
+		}
 	}
 }
 
@@ -198,43 +203,38 @@ func TestGroupMediaFilesReturnsEmptyJSONArray(t *testing.T) {
 	}
 }
 
-func TestLogicalMediaInfoUsesVMixLogsAndCaches(t *testing.T) {
-	binDir := t.TempDir()
-	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte(`#!/bin/sh
-if [ "$1" = "lsf" ]; then
-  printf 'camera0000.mp4\ncamera0001.mp4\n'
-else
-  case "$*" in
-    *camera0000.mp4.log*) printf 'RestartInterval: 10\n' ;;
-    *camera0001.mp4.log*) printf 'Duration: 00:15:30\n' ;;
-    *) exit 90 ;;
-  esac
-fi
-`), 0o700); err != nil {
-		t.Fatal(err)
+func TestProductionProxyObjectKeyMirrorsSourceDirectory(t *testing.T) {
+	source := mediaFile{Path: "toronto/recordings/raw/mix/toronto_01main_100431_0000.mp4", SourceType: "chunkedVideo"}
+	if got, want := productionProxyObjectKey("toronto", source), "toronto/recordings/production/proxies/raw/mix/toronto_01main_100431.mp4"; got != want {
+		t.Fatalf("proxy=%q want %q", got, want)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	h := &Handler{Remote: "btcpp:btcpp"}
-	info, err := h.logicalMediaInfo(context.Background(), "toronto/recordings/main/camera0000.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.SourceType != "chunkedVideo" || info.TimingSource != "vMix logs" || info.DurationMS != 930000 || len(info.Chunks) != 2 || info.Chunks[0].DurationMS != 600000 || info.Chunks[1].DurationMS != 330000 {
-		t.Fatalf("info=%+v", info)
-	}
-	if err := os.Remove(rclone); err != nil {
-		t.Fatal(err)
-	}
-	if cached, err := h.logicalMediaInfo(context.Background(), info.Path); err != nil || cached.DurationMS != info.DurationMS {
-		t.Fatalf("cached=%+v err=%v", cached, err)
+	legacy := mediaFile{Path: "toronto/recordings/main/mix/day 1/camera0000.mp4", SourceType: "chunkedVideo"}
+	if got, want := productionProxyObjectKey("toronto", legacy), "toronto/recordings/production/proxies/main/mix/day 1/camera.mp4"; got != want {
+		t.Fatalf("legacy proxy=%q want %q", got, want)
 	}
 }
 
-func TestLogicalMediaInfoFallsBackWithoutVMixLogs(t *testing.T) {
+func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsDerivedMedia(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nif [ \"$1\" = lsf ]; then printf 'camera0000.mp4\\ncamera0001.mp4\\n'; else exit 1; fi\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'mix/camera0000.mp4\\nmix/camera0001.mp4\\nmix/single.mov\\nproduction/proxies/old.mp4\\nedits/talks/final.mp4\\nassets/bumper.mp4\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	sources, err := h.logicalMediaSourcesRecursive(context.Background(), "toronto/recordings/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 2 || sources[0].Path != "toronto/recordings/mix/camera0000.mp4" || sources[0].SourceType != "chunkedVideo" || sources[1].Path != "toronto/recordings/mix/single.mov" {
+		t.Fatalf("sources=%+v", sources)
+	}
+}
+
+func TestLogicalMediaInfoRequiresEditingProxy(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'camera0000.mp4\\ncamera0001.mp4\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -243,7 +243,38 @@ func TestLogicalMediaInfoFallsBackWithoutVMixLogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.DurationMS != 0 || len(info.Chunks) != 2 || !strings.Contains(info.Warning, "Sequence-wide seeking") {
+	if info.SourceType != "chunkedVideo" || info.DurationMS != 0 || info.ProxyPath != "" || !strings.Contains(info.Warning, "Prepare this recording") {
+		t.Fatalf("info=%+v", info)
+	}
+}
+
+func TestLogicalMediaInfoUsesFinishedEditingProxy(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'camera0000.mp4\\ncamera0001.mp4\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	database := productionHandlerTestDB(t)
+	source := "toronto/recordings/raw/mix/camera0000.mp4"
+	proxy := "toronto/recordings/production/proxies/raw/mix/camera.mp4"
+	job, _, err := database.EnqueueProductionProxyJob(source, proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := database.ClaimProductionProxyJob()
+	if err != nil || claimed.ID != job.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if err := database.FinishProductionProxyJob(job.ID, 930123); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: database, Remote: "btcpp:btcpp"}
+	info, err := h.logicalMediaInfo(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ProxyPath != proxy || info.ProxyStatus != "finished" || info.DurationMS != 930123 || info.Warning != "" {
 		t.Fatalf("info=%+v", info)
 	}
 }

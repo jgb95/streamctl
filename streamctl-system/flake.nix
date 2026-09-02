@@ -15,6 +15,11 @@
         src = ./streamctl;
         vendorHash = "sha256-xul/VcwVEZrNo+ew/b1YmRUfFW4kd1bayNdG163Of7Y=";
         subPackages = [ "cmd" ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postInstall = ''
+          wrapProgram $out/bin/cmd \
+            --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.rclone ]}
+        '';
         meta = with pkgs.lib; {
           description = "Schedule pre-recorded RTMP streams via systemd";
           license = licenses.mit;

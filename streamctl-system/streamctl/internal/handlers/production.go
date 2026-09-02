@@ -275,14 +275,17 @@ type mediaWorkspacePage struct {
 	Breadcrumbs []mediaBreadcrumb
 	Dirs        []spacesEntry
 	Files       []mediaFile
+	Queued      string
+	CanPrepare  bool
 	Error       string
 }
 
 type mediaFile struct {
-	Name       string   `json:"name"`
-	Path       string   `json:"path"`
-	SourceType string   `json:"sourceType,omitempty"`
-	Chunks     []string `json:"chunks,omitempty"`
+	Name        string   `json:"name"`
+	Path        string   `json:"path"`
+	SourceType  string   `json:"sourceType,omitempty"`
+	Chunks      []string `json:"chunks,omitempty"`
+	ProxyStatus string   `json:"proxyStatus,omitempty"`
 }
 
 type mediaBrowseResponse struct {
@@ -291,18 +294,13 @@ type mediaBrowseResponse struct {
 	Files  []mediaFile   `json:"files"`
 }
 
-type logicalMediaChunk struct {
-	Path       string `json:"path"`
-	DurationMS int64  `json:"durationMs"`
-}
-
 type logicalMediaInfo struct {
-	Path         string              `json:"path"`
-	SourceType   string              `json:"sourceType"`
-	DurationMS   int64               `json:"durationMs"`
-	Chunks       []logicalMediaChunk `json:"chunks"`
-	TimingSource string              `json:"timingSource,omitempty"`
-	Warning      string              `json:"warning,omitempty"`
+	Path        string `json:"path"`
+	SourceType  string `json:"sourceType"`
+	DurationMS  int64  `json:"durationMs"`
+	ProxyPath   string `json:"proxyPath,omitempty"`
+	ProxyStatus string `json:"proxyStatus,omitempty"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 type mediaBreadcrumb struct {
@@ -341,6 +339,8 @@ func (h *Handler) mediaWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page.Prefix = clean
+	page.Queued = strings.TrimSpace(r.URL.Query().Get("queued"))
+	page.CanPrepare = clean != conference+"/recordings/" && !isDerivedRecordingPath(clean)
 	page.Breadcrumbs = mediaBreadcrumbs(conference, clean)
 	page.Dirs, page.Files, err = h.listMediaSpacesPrefix(r.Context(), clean)
 	if err != nil {
@@ -371,6 +371,12 @@ func (h *Handler) listMediaSpacesPrefix(ctx context.Context, prefix string) ([]s
 		}
 	}
 	files := groupMediaFiles(prefix, names)
+	if strings.Contains(prefix, "/recordings/production/") {
+		for i := range files {
+			files[i].SourceType = ""
+		}
+	}
+	h.attachProductionProxyStatuses(files)
 	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
 	return dirs, files, nil
 }
@@ -470,41 +476,52 @@ func (h *Handler) mediaInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) logicalMediaInfo(ctx context.Context, objectKey string) (logicalMediaInfo, error) {
-	h.mediaInfoMu.Lock()
-	if cached, ok := h.mediaInfoCache[objectKey]; ok {
-		h.mediaInfoMu.Unlock()
-		return cached, nil
-	}
-	h.mediaInfoMu.Unlock()
-
 	selected, err := h.logicalMediaSource(ctx, objectKey)
 	if err != nil {
 		return logicalMediaInfo{}, err
 	}
-	paths := selected.Chunks
-	if len(paths) == 0 {
-		paths = []string{selected.Path}
+	info := h.attachProductionProxyInfo(logicalMediaInfo{Path: selected.Path, SourceType: selected.SourceType})
+	if info.ProxyStatus == "" {
+		info.Warning = "Prepare this recording from the Media page before cutting it."
 	}
-	info := logicalMediaInfo{Path: selected.Path, SourceType: selected.SourceType, Chunks: make([]logicalMediaChunk, len(paths))}
-	for i, chunkPath := range paths {
-		info.Chunks[i].Path = chunkPath
-	}
-	if chunks, total, err := h.vmixMediaTiming(ctx, selected, paths); err == nil {
-		info.Chunks = chunks
-		info.DurationMS = total
-		info.TimingSource = "vMix logs"
-	} else if len(paths) == 1 {
-		info.Warning = "No usable vMix timing log was found. Using duration reported by the browser."
-	} else {
-		info.Warning = "No usable vMix timing logs were found. Sequence-wide seeking is unavailable."
-	}
-	h.mediaInfoMu.Lock()
-	if h.mediaInfoCache == nil {
-		h.mediaInfoCache = make(map[string]logicalMediaInfo)
-	}
-	h.mediaInfoCache[objectKey] = info
-	h.mediaInfoMu.Unlock()
 	return info, nil
+}
+
+func (h *Handler) attachProductionProxyStatuses(files []mediaFile) {
+	if h.DB == nil {
+		return
+	}
+	for i := range files {
+		if files[i].SourceType == "" {
+			continue
+		}
+		job, err := h.DB.ProductionProxyJobBySource(files[i].Path)
+		if err != nil {
+			continue
+		}
+		files[i].ProxyStatus = job.Status
+	}
+}
+
+func (h *Handler) attachProductionProxyInfo(info logicalMediaInfo) logicalMediaInfo {
+	if h.DB == nil {
+		return info
+	}
+	job, err := h.DB.ProductionProxyJobBySource(info.Path)
+	if err != nil {
+		return info
+	}
+	info.ProxyStatus = job.Status
+	if job.Status == "finished" {
+		info.ProxyPath = job.Proxy
+		info.DurationMS = job.DurationMS
+		info.Warning = ""
+	} else if job.Status == "failed" {
+		info.Warning = "Proxy preparation failed: " + job.LastError
+	} else {
+		info.Warning = "Editing proxy is " + job.Status + "."
+	}
+	return info
 }
 
 func (h *Handler) logicalMediaSource(ctx context.Context, objectKey string) (mediaFile, error) {
@@ -519,60 +536,6 @@ func (h *Handler) logicalMediaSource(ctx context.Context, objectKey string) (med
 		}
 	}
 	return mediaFile{}, fmt.Errorf("media source was not found")
-}
-
-var vmixRestartInterval = regexp.MustCompile(`(?m)RestartInterval:\s*(\d+)`)
-var vmixDuration = regexp.MustCompile(`(?m)Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)`)
-
-func (h *Handler) vmixMediaTiming(ctx context.Context, source mediaFile, paths []string) ([]logicalMediaChunk, int64, error) {
-	logsPrefix := path.Dir(source.Path) + "/logs/"
-	firstLog := logsPrefix + path.Base(paths[0]) + ".log"
-	lastLog := logsPrefix + path.Base(paths[len(paths)-1]) + ".log"
-	first, err := h.rcloneCat(ctx, firstLog)
-	if err != nil {
-		return nil, 0, err
-	}
-	last := first
-	if lastLog != firstLog {
-		last, err = h.rcloneCat(ctx, lastLog)
-		if err != nil {
-			return nil, 0, err
-		}
-	}
-	durationMatch := vmixDuration.FindSubmatch(last)
-	if len(durationMatch) != 4 {
-		return nil, 0, fmt.Errorf("vMix duration was not found")
-	}
-	hours, _ := strconv.ParseInt(string(durationMatch[1]), 10, 64)
-	minutes, _ := strconv.ParseInt(string(durationMatch[2]), 10, 64)
-	seconds, _ := strconv.ParseFloat(string(durationMatch[3]), 64)
-	total := hours*3600000 + minutes*60000 + int64(seconds*1000+0.5)
-	if total <= 0 {
-		return nil, 0, fmt.Errorf("vMix duration is invalid")
-	}
-	chunks := make([]logicalMediaChunk, len(paths))
-	if len(paths) == 1 {
-		chunks[0] = logicalMediaChunk{Path: paths[0], DurationMS: total}
-		return chunks, total, nil
-	}
-	intervalMatch := vmixRestartInterval.FindSubmatch(first)
-	if len(intervalMatch) != 2 {
-		return nil, 0, fmt.Errorf("vMix restart interval was not found")
-	}
-	intervalMinutes, _ := strconv.ParseInt(string(intervalMatch[1]), 10, 64)
-	interval := intervalMinutes * 60000
-	lastDuration := total - int64(len(paths)-1)*interval
-	if interval <= 0 || lastDuration <= 0 || lastDuration > interval {
-		return nil, 0, fmt.Errorf("vMix duration does not match %d chunks", len(paths))
-	}
-	for i, chunkPath := range paths {
-		duration := interval
-		if i == len(paths)-1 {
-			duration = lastDuration
-		}
-		chunks[i] = logicalMediaChunk{Path: chunkPath, DurationMS: duration}
-	}
-	return chunks, total, nil
 }
 
 func mediaBreadcrumbs(conference, prefix string) []mediaBreadcrumb {

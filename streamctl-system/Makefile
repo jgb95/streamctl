@@ -164,6 +164,7 @@ run-local: build ## Run streamctl locally on :8080 with a test config.
 	  -listen :8080 \
 	  -db /tmp/streamctl-local/streamctl.db \
 	  -video-dir /tmp/streamctl-local/videos \
+	  -cache-dir /tmp/streamctl-local/cache \
 	  -unit-dir /tmp/streamctl-local \
 	  -unit-prefix test- \
 	  -run-user "$$USER"; \

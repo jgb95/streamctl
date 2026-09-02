@@ -158,6 +158,22 @@ CREATE TABLE IF NOT EXISTS production_cuts (
 
 CREATE INDEX IF NOT EXISTS production_cuts_conference_idx ON production_cuts (conference, talk_id, position);
 
+CREATE TABLE IF NOT EXISTS production_proxy_jobs (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	source_object_key TEXT NOT NULL UNIQUE,
+	proxy_object_key TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'failed', 'finished')),
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	started_at DATETIME,
+	finished_at DATETIME,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS production_proxy_jobs_status_idx ON production_proxy_jobs (status, id);
+
 `
 
 func (db *DB) Migrate() error {

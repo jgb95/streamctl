@@ -80,10 +80,9 @@ type Handler struct {
 	OAuth               *btcppoauth.Client
 	BTCPP               productionCandidatesClient
 
-	funcs          template.FuncMap
-	gpuQueueMu     sync.Mutex
-	mediaInfoMu    sync.Mutex
-	mediaInfoCache map[string]logicalMediaInfo
+	funcs        template.FuncMap
+	gpuQueueMu   sync.Mutex
+	proxyQueueMu sync.Mutex
 }
 
 type productionCandidatesClient interface {
@@ -128,6 +127,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production/media/browse", h.auth(http.HandlerFunc(h.mediaBrowse)))
 	mux.Handle("/production/media/info", h.auth(http.HandlerFunc(h.mediaInfo)))
 	mux.Handle("/production/media/open", h.auth(http.HandlerFunc(h.mediaOpen)))
+	mux.Handle("/production/media/prepare", h.mutation(http.HandlerFunc(h.productionProxyPrepare)))
 	mux.Handle("/production/cuts/save", h.mutation(http.HandlerFunc(h.productionCutsSave)))
 	mux.Handle("/normalize", h.auth(http.HandlerFunc(h.normalizationFiles)))
 	mux.Handle("/normalize/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
@@ -171,6 +171,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/nostr/relays/update/", h.mutation(http.HandlerFunc(h.nostrRelayUpdate)))
 	mux.Handle("/nostr/relays/delete/", h.mutation(http.HandlerFunc(h.nostrRelayDelete)))
 	go h.gpuQueueDispatcher()
+	go h.productionProxyDispatcher()
 }
 
 func redirectTo(path string) http.HandlerFunc {
