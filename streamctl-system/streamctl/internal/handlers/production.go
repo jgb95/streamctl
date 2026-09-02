@@ -42,10 +42,10 @@ type productionTalkView struct {
 	Cuts       []db.ProductionCut `json:"cuts"`
 	CutCount   int                `json:"-"`
 	URL        string             `json:"-"`
-	DayLabel   string             `json:"-"`
-	StageLabel string             `json:"-"`
-	DateLabel  string             `json:"-"`
-	TimeLabel  string             `json:"-"`
+	DayLabel   string             `json:"dayLabel"`
+	StageLabel string             `json:"stageLabel"`
+	DateLabel  string             `json:"dateLabel"`
+	TimeLabel  string             `json:"timeLabel"`
 }
 
 type productionTalksPage struct {
@@ -67,9 +67,9 @@ type productionStageGroup struct {
 }
 
 type productionCutterJSON struct {
-	Conference string             `json:"conference"`
-	Talk       productionTalkView `json:"talk"`
-	NextURL    string             `json:"nextUrl"`
+	Conference string               `json:"conference"`
+	Talks      []productionTalkView `json:"talks"`
+	Index      int                  `json:"index"`
 }
 
 type productionCutPage struct {
@@ -188,8 +188,10 @@ func (h *Handler) productionCut(w http.ResponseWriter, r *http.Request) {
 	}
 	conferences, _ := h.productionConferences(r.Context())
 	decorateProductionTalks(talks, productionConferenceStart(conferences, conference))
+	for i := range talks {
+		talks[i].Cuts = cuts[talks[i].TalkID]
+	}
 	talk := talks[index]
-	talk.Cuts = cuts[talk.TalkID]
 	page := productionCutPage{Conference: conference, Talk: talk}
 	page.Nav.Active = "timestamp"
 	page.Nav.Action = "/production/timestamp"
@@ -201,7 +203,7 @@ func (h *Handler) productionCut(w http.ResponseWriter, r *http.Request) {
 	if index+1 < len(talks) {
 		page.Next = productionCutURL(conference, talks[index+1].TalkID)
 	}
-	encoded, err := json.Marshal(productionCutterJSON{Conference: conference, Talk: talk, NextURL: page.Next})
+	encoded, err := json.Marshal(productionCutterJSON{Conference: conference, Talks: talks, Index: index})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
