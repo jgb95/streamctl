@@ -39,16 +39,31 @@ type productionHomePage struct {
 
 type productionTalkView struct {
 	btcppclient.Candidate
-	Cuts     []db.ProductionCut `json:"cuts"`
-	CutCount int                `json:"-"`
-	URL      string             `json:"-"`
+	Cuts       []db.ProductionCut `json:"cuts"`
+	CutCount   int                `json:"-"`
+	URL        string             `json:"-"`
+	DayLabel   string             `json:"-"`
+	StageLabel string             `json:"-"`
+	DateLabel  string             `json:"-"`
+	TimeLabel  string             `json:"-"`
 }
 
 type productionTalksPage struct {
 	Nav        productionNavView
 	Conference string
-	Talks      []productionTalkView
+	TalkGroups []productionTalkGroup
 	Error      string
+}
+
+type productionTalkGroup struct {
+	DayLabel  string
+	DateLabel string
+	Stages    []productionStageGroup
+}
+
+type productionStageGroup struct {
+	StageLabel string
+	Talks      []productionTalkView
 }
 
 type productionCutterJSON struct {
@@ -120,23 +135,24 @@ func (h *Handler) productionTimestamp(w http.ResponseWriter, r *http.Request) {
 		h.renderStatus(w, r, http.StatusBadRequest, "production_talks.html", page)
 		return
 	}
-	var err error
-	page.Talks, err = h.productionTalks(r.Context(), conference)
+	talks, err := h.productionTalks(r.Context(), conference)
 	if err != nil {
 		if page.Error == "" {
 			page.Error = err.Error()
 		}
 	} else {
+		decorateProductionTalks(talks, productionConferenceStart(page.Nav.Conferences, conference))
 		cuts, err := h.DB.ListProductionCuts(conference)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for i := range page.Talks {
-			page.Talks[i].Cuts = cuts[page.Talks[i].TalkID]
-			page.Talks[i].CutCount = len(page.Talks[i].Cuts)
-			page.Talks[i].URL = productionCutURL(conference, page.Talks[i].TalkID)
+		for i := range talks {
+			talks[i].Cuts = cuts[talks[i].TalkID]
+			talks[i].CutCount = len(talks[i].Cuts)
+			talks[i].URL = productionCutURL(conference, talks[i].TalkID)
 		}
+		page.TalkGroups = groupProductionTalks(talks)
 	}
 	h.render(w, r, "production_talks.html", page)
 }
@@ -170,13 +186,15 @@ func (h *Handler) productionCut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	conferences, _ := h.productionConferences(r.Context())
+	decorateProductionTalks(talks, productionConferenceStart(conferences, conference))
 	talk := talks[index]
 	talk.Cuts = cuts[talk.TalkID]
 	page := productionCutPage{Conference: conference, Talk: talk}
 	page.Nav.Active = "timestamp"
 	page.Nav.Action = "/production/timestamp"
 	page.Nav.Conference = conference
-	page.Nav.Conferences, _ = h.productionConferences(r.Context())
+	page.Nav.Conferences = conferences
 	if index > 0 {
 		page.Previous = productionCutURL(conference, talks[index-1].TalkID)
 	}
@@ -235,7 +253,17 @@ func (h *Handler) productionTalks(ctx context.Context, conference string) ([]pro
 	if err != nil {
 		return nil, fmt.Errorf("loading Bitcoin++ talks failed: %w", err)
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidateSortKey(candidates[i]) < candidateSortKey(candidates[j]) })
+	sort.SliceStable(candidates, func(i, j int) bool {
+		leftDay, rightDay := candidateDayKey(candidates[i]), candidateDayKey(candidates[j])
+		if leftDay != rightDay {
+			return leftDay < rightDay
+		}
+		leftStage, rightStage := productionStageRank(candidates[i].Venue), productionStageRank(candidates[j].Venue)
+		if leftStage != rightStage {
+			return leftStage < rightStage
+		}
+		return candidateSortKey(candidates[i]) < candidateSortKey(candidates[j])
+	})
 	talks := make([]productionTalkView, len(candidates))
 	for i, candidate := range candidates {
 		talks[i].Candidate = candidate
@@ -249,6 +277,126 @@ func candidateSortKey(candidate btcppclient.Candidate) string {
 		start = *candidate.StartsAt
 	}
 	return start + "\x00" + candidate.Venue + "\x00" + candidate.Title
+}
+
+func candidateDayKey(candidate btcppclient.Candidate) string {
+	if candidate.StartsAt == nil {
+		return "9999"
+	}
+	if parsed, err := time.Parse(time.RFC3339, *candidate.StartsAt); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	return *candidate.StartsAt
+}
+
+func productionConferenceStart(conferences []productionConferenceView, tag string) *string {
+	for _, conference := range conferences {
+		if conference.Tag == tag {
+			return conference.StartsAt
+		}
+	}
+	return nil
+}
+
+func decorateProductionTalks(talks []productionTalkView, conferenceStart *string) {
+	var firstDay time.Time
+	if conferenceStart != nil {
+		firstDay, _ = time.Parse(time.RFC3339, *conferenceStart)
+	}
+	if firstDay.IsZero() {
+		for _, talk := range talks {
+			if talk.StartsAt == nil {
+				continue
+			}
+			parsed, err := time.Parse(time.RFC3339, *talk.StartsAt)
+			if err == nil && (firstDay.IsZero() || parsed.Before(firstDay)) {
+				firstDay = parsed
+			}
+		}
+	}
+	for i := range talks {
+		talks[i].StageLabel = productionStageLabel(talks[i].Venue)
+		if talks[i].StartsAt == nil {
+			continue
+		}
+		start, err := time.Parse(time.RFC3339, *talks[i].StartsAt)
+		if err != nil {
+			continue
+		}
+		talks[i].DateLabel = start.Format("Mon, Jan 2, 2006")
+		talks[i].TimeLabel = start.Format("3:04 PM")
+		if talks[i].EndsAt != nil {
+			if end, err := time.Parse(time.RFC3339, *talks[i].EndsAt); err == nil {
+				talks[i].TimeLabel += "–" + end.Format("3:04 PM")
+			}
+		}
+		if !firstDay.IsZero() {
+			base := firstDay.In(start.Location())
+			baseDate := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, time.UTC)
+			startDate := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+			day := int(startDate.Sub(baseDate)/(24*time.Hour)) + 1
+			if day > 0 {
+				talks[i].DayLabel = fmt.Sprintf("Day %d", day)
+			}
+		}
+	}
+}
+
+func productionStageLabel(venue string) string {
+	switch strings.ToLower(strings.TrimSpace(venue)) {
+	case "1", "one", "stage 1", "stage one", "main":
+		return "Main"
+	case "2", "two", "stage 2", "stage two", "talks":
+		return "Talks"
+	case "3", "three", "stage 3", "stage three", "workshop":
+		return "Workshop"
+	default:
+		return strings.TrimSpace(venue)
+	}
+}
+
+func productionStageRank(venue string) int {
+	switch productionStageLabel(venue) {
+	case "Main":
+		return 1
+	case "Talks":
+		return 2
+	case "Workshop":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func groupProductionTalks(talks []productionTalkView) []productionTalkGroup {
+	var groups []productionTalkGroup
+	for _, talk := range talks {
+		dayLabel := talk.DayLabel
+		if dayLabel == "" {
+			dayLabel = "Unscheduled"
+		}
+		if len(groups) == 0 || groups[len(groups)-1].DayLabel != dayLabel || groups[len(groups)-1].DateLabel != talk.DateLabel {
+			groups = append(groups, productionTalkGroup{DayLabel: dayLabel, DateLabel: talk.DateLabel})
+		}
+		group := &groups[len(groups)-1]
+		stageLabel := talk.StageLabel
+		if stageLabel == "" {
+			stageLabel = "Other"
+		}
+		stageIndex := -1
+		for i := range group.Stages {
+			if group.Stages[i].StageLabel == stageLabel {
+				stageIndex = i
+				break
+			}
+		}
+		if stageIndex < 0 {
+			group.Stages = append(group.Stages, productionStageGroup{StageLabel: stageLabel})
+			stageIndex = len(group.Stages) - 1
+		}
+		group.Stages[stageIndex].Talks = append(group.Stages[stageIndex].Talks, talk)
+	}
+	return groups
 }
 
 func productionCutURL(conference, talkID string) string {

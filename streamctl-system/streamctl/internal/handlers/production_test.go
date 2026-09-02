@@ -49,8 +49,9 @@ func TestProductionWorkspaceLoadsCandidatesAndCuts(t *testing.T) {
 	}
 	h := &Handler{
 		DB: database, funcs: template.FuncMap{},
-		BTCPP: productionCandidatesStub{conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++"}}, candidates: []btcppclient.Candidate{{
-			TalkID: "talk-1", Title: "A useful talk", Venue: "Main", Eligible: true,
+		BTCPP: productionCandidatesStub{conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++", StartsAt: stringPointer("2026-07-22T09:00:00-04:00")}}, candidates: []btcppclient.Candidate{{
+			TalkID: "talk-1", Title: "A useful talk", Venue: "one", Eligible: true,
+			StartsAt: stringPointer("2026-07-22T10:00:00-04:00"), EndsAt: stringPointer("2026-07-22T10:30:00-04:00"),
 		}}},
 	}
 	response := httptest.NewRecorder()
@@ -59,7 +60,7 @@ func TestProductionWorkspaceLoadsCandidatesAndCuts(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Timestamp talks", "Conference workspace", `value="toronto"`, "selected", `onchange="this.form.submit()"`, `/production/media?conference=toronto`, `/production/timestamp?conference=toronto`, "A useful talk", "1 cut"} {
+	for _, want := range []string{"Timestamp talks", "Conference workspace", `value="toronto"`, "selected", `onchange="this.form.submit()"`, `/production/media?conference=toronto`, `/production/timestamp?conference=toronto`, "A useful talk", "Day 1", "Main", "Wed, Jul 22, 2026", "10:00 AM–10:30 AM", "1 cut"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("workspace omitted %q: %s", want, body)
 		}
@@ -69,6 +70,43 @@ func TestProductionWorkspaceLoadsCandidatesAndCuts(t *testing.T) {
 	}
 	if strings.Contains(body, ">Open</button>") {
 		t.Fatalf("timestamp selector retained redundant open button: %s", body)
+	}
+}
+
+func TestProductionTalkScheduleLabels(t *testing.T) {
+	talks := []productionTalkView{
+		{Candidate: btcppclient.Candidate{Venue: "1", StartsAt: stringPointer("2026-07-22T10:00:00-04:00")}},
+		{Candidate: btcppclient.Candidate{Venue: "stage two", StartsAt: stringPointer("2026-07-23T11:00:00-04:00")}},
+		{Candidate: btcppclient.Candidate{Venue: "three", StartsAt: stringPointer("2026-07-24T12:00:00-04:00")}},
+	}
+	decorateProductionTalks(talks, stringPointer("2026-07-22T09:00:00-04:00"))
+	for i, want := range []struct{ day, stage string }{{"Day 1", "Main"}, {"Day 2", "Talks"}, {"Day 3", "Workshop"}} {
+		if talks[i].DayLabel != want.day || talks[i].StageLabel != want.stage {
+			t.Fatalf("talk %d labels = %q, %q; want %q, %q", i, talks[i].DayLabel, talks[i].StageLabel, want.day, want.stage)
+		}
+	}
+	groups := groupProductionTalks(talks)
+	if len(groups) != 3 || groups[1].DayLabel != "Day 2" || groups[1].DateLabel != "Thu, Jul 23, 2026" || len(groups[1].Stages) != 1 || len(groups[1].Stages[0].Talks) != 1 {
+		t.Fatalf("unexpected talk groups: %+v", groups)
+	}
+}
+
+func TestProductionTalksFollowDayStageTimeOrder(t *testing.T) {
+	h := &Handler{BTCPP: productionCandidatesStub{candidates: []btcppclient.Candidate{
+		{TalkID: "talks-early", Venue: "two", StartsAt: stringPointer("2026-07-22T09:00:00-04:00")},
+		{TalkID: "main-late", Venue: "one", StartsAt: stringPointer("2026-07-22T11:00:00-04:00")},
+		{TalkID: "main-early", Venue: "one", StartsAt: stringPointer("2026-07-22T10:00:00-04:00")},
+		{TalkID: "next-day", Venue: "one", StartsAt: stringPointer("2026-07-23T08:00:00-04:00")},
+	}}}
+	talks, err := h.productionTalks(context.Background(), "toronto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"main-early", "main-late", "talks-early", "next-day"}
+	for i := range want {
+		if talks[i].TalkID != want[i] {
+			t.Fatalf("talk %d = %q; want %q (all=%+v)", i, talks[i].TalkID, want[i], talks)
+		}
 	}
 }
 
@@ -108,9 +146,9 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &Handler{DB: database, funcs: template.FuncMap{}, BTCPP: productionCandidatesStub{candidates: []btcppclient.Candidate{
-		{TalkID: "talk-1", Title: "First", StartsAt: stringPointer("2025-01-01T10:00:00Z")},
-		{TalkID: "talk-2", Title: "Second", StartsAt: stringPointer("2025-01-01T11:00:00Z")},
-		{TalkID: "talk-3", Title: "Third", StartsAt: stringPointer("2025-01-01T12:00:00Z")},
+		{TalkID: "talk-1", Title: "First", Venue: "two", StartsAt: stringPointer("2025-01-01T10:00:00Z")},
+		{TalkID: "talk-2", Title: "Second", Venue: "two", StartsAt: stringPointer("2025-01-01T11:00:00Z"), EndsAt: stringPointer("2025-01-01T11:30:00Z"), Speakers: []btcppclient.Speaker{{Name: "Speaker Two"}}},
+		{TalkID: "talk-3", Title: "Third", Venue: "two", StartsAt: stringPointer("2025-01-01T12:00:00Z")},
 	}}}
 	response := httptest.NewRecorder()
 	h.productionCut(response, httptest.NewRequest(http.MethodGet, "/production/timestamp/cut?conference=toronto&talk_id=talk-2", nil))
@@ -118,7 +156,7 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Previous", "Next", `"inMs":1000`, "All talks", "global-seek", "/production/media/info", "proxyPath", "Editing proxy", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy"} {
+	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next", `"inMs":1000`, "Back to talks", "global-seek", "/production/media/info", "proxyPath", "editing proxy", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy", "sourceFilename", "selectRange", "requestSubmit", "↵"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}
