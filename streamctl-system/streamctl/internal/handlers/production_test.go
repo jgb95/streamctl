@@ -156,7 +156,7 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "global-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy", "sourceFilename", "selectRange", "requestSubmit", "sessionStorage", "persistPlayerState", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Set In on this source first", "↵"} {
+	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "global-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy", "sourceFilename", "selectRange", "requestSubmit", "sessionStorage", "persistPlayerState", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Set In on this source first", "fine-scrubber", "fineWindowMs=5000", "previewFineSeek", "setPointerCapture", "requestAnimationFrame", "↵"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}
