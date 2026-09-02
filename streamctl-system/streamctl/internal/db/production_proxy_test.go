@@ -36,11 +36,32 @@ func TestProductionProxyQueueLifecycleAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := database.FailProductionProxyJob(claimed.ID, errors.New("test failure again")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RetryProductionProxyJob(claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = database.ClaimProductionProxyJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateProductionProxyJobProgress(claimed.ID, "Encoding proxy", 42); err != nil {
+		t.Fatal(err)
+	}
+	running, err := database.ProductionProxyQueue(10)
+	if err != nil || running.Running != 1 || len(running.Items) != 1 || running.Items[0].Progress != 42 || running.Items[0].Stage != "Encoding proxy" {
+		t.Fatalf("running queue=%+v err=%v", running, err)
+	}
 	if err := database.FinishProductionProxyJob(claimed.ID, 930123); err != nil {
 		t.Fatal(err)
 	}
 	finished, queued, err := database.EnqueueProductionProxyJob(source, proxy)
 	if err != nil || queued || finished.Status != "finished" || finished.DurationMS != 930123 {
 		t.Fatalf("finished job=%+v queued=%v err=%v", finished, queued, err)
+	}
+	queue, err := database.ProductionProxyQueue(10)
+	if err != nil || queue.Finished != 1 || len(queue.Items) != 0 {
+		t.Fatalf("finished queue=%+v err=%v", queue, err)
 	}
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -58,6 +59,24 @@ func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request)
 	go h.dispatchProductionProxyQueue(context.Background())
 	destination := "/production/media?conference=" + url.QueryEscape(conference) + "&prefix=" + url.QueryEscape(prefix) + "&queued=" + strconv.Itoa(queued)
 	http.Redirect(w, r, destination, http.StatusSeeOther)
+}
+
+func (h *Handler) productionProxyRequeue(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid media preparation job", http.StatusBadRequest)
+		return
+	}
+	if err := h.DB.RetryProductionProxyJob(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "media preparation job is not failed", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	go h.dispatchProductionProxyQueue(context.Background())
+	http.Redirect(w, r, "/worker?requeued_proxy="+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (h *Handler) logicalMediaSourcesRecursive(ctx context.Context, prefix string) ([]mediaFile, error) {
@@ -182,14 +201,20 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 	defer os.RemoveAll(workDir)
 
 	var concat bytes.Buffer
+	var sourceDurationMS int64
 	for i, objectKey := range chunks {
 		extension := strings.ToLower(path.Ext(objectKey))
 		if extension == "" {
 			extension = ".mp4"
 		}
 		local := filepath.Join(workDir, fmt.Sprintf("input-%05d%s", i, extension))
-		if err := h.runProxyCommand(ctx, "rclone", "copyto", "--no-traverse", h.remotePath(objectKey), local); err != nil {
+		stage := fmt.Sprintf("Downloading chunk %d of %d", i+1, len(chunks))
+		h.updateProductionProxyProgress(job.ID, stage, 0)
+		if err := h.runProxyRclone(ctx, job.ID, stage, "copyto", "--no-traverse", h.remotePath(objectKey), local); err != nil {
 			return 0, fmt.Errorf("download %s: %w", objectKey, err)
+		}
+		if chunkDurationMS, err := proxyDurationMS(ctx, local); err == nil {
+			sourceDurationMS += chunkDurationMS
 		}
 		fmt.Fprintf(&concat, "file '%s'\n", filepath.ToSlash(local))
 	}
@@ -198,7 +223,8 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 		return 0, err
 	}
 	output := filepath.Join(workDir, "proxy.mp4")
-	if err := h.runProxyCommand(ctx, "ffmpeg",
+	h.updateProductionProxyProgress(job.ID, "Encoding proxy", 0)
+	if err := h.runProxyFFmpeg(ctx, job.ID, sourceDurationMS,
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
 		"-fflags", "+genpts",
 		"-f", "concat", "-safe", "0", "-i", concatPath,
@@ -214,10 +240,61 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 	if err != nil {
 		return 0, err
 	}
-	if err := h.runProxyCommand(ctx, "rclone", "copyto", "--no-traverse", output, h.remotePath(job.Proxy)); err != nil {
+	h.updateProductionProxyProgress(job.ID, "Uploading proxy", 0)
+	if err := h.runProxyRclone(ctx, job.ID, "Uploading proxy", "copyto", "--no-traverse", output, h.remotePath(job.Proxy)); err != nil {
 		return 0, fmt.Errorf("upload %s: %w", job.Proxy, err)
 	}
 	return durationMS, nil
+}
+
+func (h *Handler) updateProductionProxyProgress(id int64, stage string, percent int) {
+	if err := h.DB.UpdateProductionProxyJobProgress(id, stage, percent); err != nil {
+		log.Printf("updating production proxy %d progress failed: %v", id, err)
+	}
+}
+
+func (h *Handler) runProxyFFmpeg(ctx context.Context, jobID, durationMS int64, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("ffmpeg output path is required")
+	}
+	output := args[len(args)-1]
+	args = append(args[:len(args)-1], "-progress", "pipe:1", "-nostats", output)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	lastPercent := -1
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		key, value, ok := strings.Cut(scanner.Text(), "=")
+		if !ok || key != "out_time_us" || durationMS <= 0 {
+			continue
+		}
+		microseconds, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			continue
+		}
+		percent := int(microseconds / 1000 * 100 / durationMS)
+		if percent > 99 {
+			percent = 99
+		}
+		if percent != lastPercent {
+			h.updateProductionProxyProgress(jobID, "Encoding proxy", percent)
+			lastPercent = percent
+		}
+	}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return fmt.Errorf("%s", commandError(stderr.Bytes(), waitErr))
+	}
+	return scanErr
 }
 
 func proxyDurationMS(ctx context.Context, filename string) (int64, error) {
@@ -233,14 +310,62 @@ func proxyDurationMS(ctx context.Context, filename string) (int64, error) {
 	return int64(math.Round(seconds * 1000)), nil
 }
 
-func (h *Handler) runProxyCommand(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+func (h *Handler) runProxyRclone(ctx context.Context, jobID int64, stage string, args ...string) error {
+	args = append([]string{"--stats", "1s", "--stats-one-line", "--stats-log-level", "NOTICE"}, args...)
+	cmd := exec.CommandContext(ctx, "rclone", args...)
 	cmd.Env = rcloneEnv(h.RcloneConfig)
-	out, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	pipe, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("%s", commandError(out, err))
+		return err
 	}
-	return nil
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(pipe)
+	scanner.Split(splitCRLF)
+	lastPercent := -1
+	for scanner.Scan() {
+		line := scanner.Text()
+		stderr.WriteString(line)
+		stderr.WriteByte('\n')
+		if percent, ok := transferPercent(line); ok && percent != lastPercent {
+			h.updateProductionProxyProgress(jobID, stage, percent)
+			lastPercent = percent
+		}
+	}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return fmt.Errorf("%s", commandError(append(stdout.Bytes(), stderr.Bytes()...), waitErr))
+	}
+	return scanErr
+}
+
+func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\r' || b == '\n' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+func transferPercent(line string) (int, bool) {
+	percentAt := strings.IndexByte(line, '%')
+	if percentAt < 1 {
+		return 0, false
+	}
+	start := percentAt - 1
+	for start >= 0 && line[start] >= '0' && line[start] <= '9' {
+		start--
+	}
+	percent, err := strconv.Atoi(line[start+1 : percentAt])
+	return percent, err == nil && percent >= 0 && percent <= 100
 }
 
 func commandError(output []byte, err error) string {

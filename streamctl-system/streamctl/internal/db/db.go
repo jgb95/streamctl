@@ -165,6 +165,8 @@ CREATE TABLE IF NOT EXISTS production_proxy_jobs (
 	status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'failed', 'finished')),
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	duration_ms INTEGER NOT NULL DEFAULT 0,
+	progress_percent INTEGER NOT NULL DEFAULT 0,
+	progress_stage TEXT NOT NULL DEFAULT 'Waiting',
 	last_error TEXT NOT NULL DEFAULT '',
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	started_at DATETIME,
@@ -195,7 +197,32 @@ func (db *DB) Migrate() error {
 	if err := db.migrateGPUQueueColumns(); err != nil {
 		return err
 	}
+	if err := db.migrateProductionProxyColumns(); err != nil {
+		return err
+	}
 	return db.seedDefaultNostrRelays()
+}
+
+func (db *DB) migrateProductionProxyColumns() error {
+	columns := []struct {
+		name string
+		sql  string
+	}{
+		{"progress_percent", `ALTER TABLE production_proxy_jobs ADD COLUMN progress_percent INTEGER NOT NULL DEFAULT 0`},
+		{"progress_stage", `ALTER TABLE production_proxy_jobs ADD COLUMN progress_stage TEXT NOT NULL DEFAULT 'Waiting'`},
+	}
+	for _, column := range columns {
+		hasColumn, err := db.hasColumn("production_proxy_jobs", column.name)
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			if _, err := db.Exec(column.sql); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (db *DB) migrateBTCPPRecordingColumn() error {
@@ -1137,7 +1164,17 @@ func (db *DB) ListVisibleRenderQueueItems(limit int) ([]RenderJobQueueItem, erro
 	}
 	return db.listRenderJobs(`
 		SELECT `+renderJobColumns+` FROM render_job_queue
-		ORDER BY created_at DESC, id DESC LIMIT ?
+		WHERE status IN ('queued', 'running', 'failed', 'cancelled')
+		ORDER BY
+			CASE status
+				WHEN 'running' THEN 0
+				WHEN 'queued' THEN 1
+				WHEN 'failed' THEN 2
+				WHEN 'cancelled' THEN 3
+			END,
+			COALESCE(started_at, finished_at, created_at) DESC,
+			id DESC
+		LIMIT ?
 	`, limit)
 }
 

@@ -87,6 +87,15 @@ tr:last-child td { border-bottom: none; }
 .queue-table th:nth-child(6), .queue-table td:nth-child(6) { width: 120px; }
 .queue-table td { vertical-align: top; }
 .queue-table code { display: block; max-width: 100%; white-space: normal; }
+.proxy-jobs { margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.proxy-job { padding: 14px; background: var(--panel); }
+.proxy-job + .proxy-job { border-top: 1px solid var(--border); }
+.proxy-job-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; }
+.proxy-job-head code { min-width: 0; overflow-wrap: anywhere; }
+.proxy-job-head form { background: none; border: 0; padding: 0; }
+.proxy-progress-meta { display: flex; justify-content: space-between; gap: 12px; margin: 12px 0 5px 0; font-size: 13px; }
+.proxy-job progress { display: block; width: 100%; height: 8px; }
+.proxy-job .inline-error { margin: 10px 0 0 0; }
 .worker-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .worker-meta div { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: rgba(15,17,21,0.35); min-width: 0; }
 .worker-meta span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
@@ -155,6 +164,9 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 	.workspace-selector { align-items: stretch; flex-direction: column; }
 	.workspace-selector .btn { width: 100%; text-align: center; }
 	.queue-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.proxy-job-head { grid-template-columns: auto minmax(0, 1fr); }
+	.proxy-job-head .proxy-attempt { grid-column: 2; }
+	.proxy-job-head form { grid-column: 2; }
 	.queue-table { min-width: 860px; }
 	.worker-meta { grid-template-columns: 1fr; }
 }

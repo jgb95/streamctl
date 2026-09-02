@@ -376,3 +376,43 @@ func TestVisibleGPUQueueItemsExcludeFinished(t *testing.T) {
 		t.Fatalf("failed items mismatch: %#v", failedItems)
 	}
 }
+
+func TestVisibleRenderQueueItemsExcludeFinished(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	finished, err := database.EnqueueRenderJob("finished", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkRenderQueueRunning(finished.ID, "finished.service"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkRenderQueueFinished(finished.ID, "finished", ""); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := database.EnqueueRenderJob("failed", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkRenderQueueRunning(failed.ID, "failed.service"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkRenderQueueFinished(failed.ID, "failed", "boom"); err != nil {
+		t.Fatal(err)
+	}
+
+	visible, err := database.ListVisibleRenderQueueItems(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 1 || visible[0].ID != failed.ID {
+		t.Fatalf("visible items should include failed but not finished: %#v", visible)
+	}
+}

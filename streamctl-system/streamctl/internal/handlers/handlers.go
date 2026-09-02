@@ -139,6 +139,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/livestream-files/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
 	mux.Handle("/livestream-files/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
 	mux.Handle("/worker", h.auth(http.HandlerFunc(h.worker)))
+	mux.Handle("/worker/media/requeue", h.mutation(http.HandlerFunc(h.productionProxyRequeue)))
 	mux.Handle("/worker/normalize/requeue", h.mutation(http.HandlerFunc(h.normalizationFileRequeue)))
 	mux.Handle("/worker/normalize/requeue-stale", h.mutation(http.HandlerFunc(h.normalizationFilesRequeueStale)))
 	mux.Handle("/worker/normalize/clear-resolved-failures", h.mutation(http.HandlerFunc(h.normalizationFilesClearResolvedFailures)))
