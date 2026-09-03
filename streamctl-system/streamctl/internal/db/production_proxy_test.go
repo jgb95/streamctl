@@ -65,3 +65,24 @@ func TestProductionProxyQueueLifecycleAndRetry(t *testing.T) {
 		t.Fatalf("finished queue=%+v err=%v", queue, err)
 	}
 }
+
+func TestProductionProxyCountsAreConferenceScoped(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for i, conference := range []string{"toronto", "toronto", "nairobi"} {
+		source := conference + "/recordings/raw/mix/source" + string(rune('a'+i)) + ".mp4"
+		if _, _, err := database.EnqueueProductionProxyJob(source, conference+"/recordings/workspace/proxies/test.mp4"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts, err := database.ProductionProxyCounts("toronto")
+	if err != nil || counts.Queued != 2 || counts.Running != 0 || counts.Finished != 0 || counts.Failed != 0 {
+		t.Fatalf("counts=%+v err=%v", counts, err)
+	}
+}

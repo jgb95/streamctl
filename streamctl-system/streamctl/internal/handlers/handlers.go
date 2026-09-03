@@ -79,6 +79,7 @@ type Handler struct {
 	Systemd             *systemd.Manager
 	OAuth               *btcppoauth.Client
 	BTCPP               productionCandidatesClient
+	BTCPPBaseURL        string
 
 	funcs        template.FuncMap
 	gpuQueueMu   sync.Mutex
@@ -123,7 +124,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production", h.auth(http.HandlerFunc(h.productionHome)))
 	mux.Handle("/production/timestamp", h.auth(http.HandlerFunc(h.productionTimestamp)))
 	mux.Handle("/production/timestamp/cut", h.auth(http.HandlerFunc(h.productionCut)))
-	mux.Handle("/production/media", h.auth(http.HandlerFunc(h.mediaWorkspace)))
 	mux.Handle("/production/media/browse", h.auth(http.HandlerFunc(h.mediaBrowse)))
 	mux.Handle("/production/media/info", h.auth(http.HandlerFunc(h.mediaInfo)))
 	mux.Handle("/production/media/open", h.auth(http.HandlerFunc(h.mediaOpen)))
@@ -3608,7 +3608,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -27,18 +27,18 @@ const productionProxyDirectory = "workspace/proxies"
 
 func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request) {
 	conference := strings.TrimSpace(r.FormValue("conference"))
-	prefix, err := cleanSpacesPrefix(r.FormValue("prefix"))
-	if !validProductionConference(conference) || err != nil || !strings.HasPrefix(prefix, conference+"/recordings/") || isDerivedRecordingPath(prefix) {
-		http.Error(w, "choose a source folder inside this conference's recordings workspace", http.StatusBadRequest)
+	target := strings.TrimSpace(r.FormValue("target"))
+	if !validProductionConference(conference) {
+		http.Error(w, "invalid conference", http.StatusBadRequest)
 		return
 	}
 	if h.DB == nil || strings.TrimSpace(h.Remote) == "" {
 		http.Error(w, "media preparation is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	sources, err := h.logicalMediaSourcesRecursive(r.Context(), prefix)
+	sources, err := h.productionProxyTargetSources(r.Context(), conference, target)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	queued := 0
@@ -57,8 +57,39 @@ func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	go h.dispatchProductionProxyQueue(context.Background())
-	destination := "/production/media?conference=" + url.QueryEscape(conference) + "&prefix=" + url.QueryEscape(prefix) + "&queued=" + strconv.Itoa(queued)
-	http.Redirect(w, r, destination, http.StatusSeeOther)
+	message := "No new editing proxy jobs were needed."
+	if queued == 1 {
+		message = "Queued 1 new editing proxy job."
+	} else if queued > 1 {
+		message = fmt.Sprintf("Queued %d new editing proxy jobs.", queued)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"queued":  queued,
+		"status":  "queued",
+		"message": message,
+	})
+}
+
+func (h *Handler) productionProxyTargetSources(ctx context.Context, conference, target string) ([]mediaFile, error) {
+	target = strings.TrimSpace(strings.ReplaceAll(target, "\\", "/"))
+	root := conference + "/recordings/"
+	if strings.HasSuffix(target, "/") {
+		prefix, err := cleanSpacesPrefix(target)
+		if err != nil || prefix == root || !strings.HasPrefix(prefix, root) || isProductionWorkspacePath(prefix) {
+			return nil, fmt.Errorf("choose a source folder inside this conference's recordings folder")
+		}
+		return h.logicalMediaSourcesRecursive(ctx, prefix)
+	}
+	objectKey, err := validateRenderObjectKey(target)
+	if err != nil || !strings.HasPrefix(objectKey, root) || isProductionWorkspacePath(objectKey) || !isVideoFile(objectKey) {
+		return nil, fmt.Errorf("choose a source video inside this conference's recordings folder")
+	}
+	source, err := h.logicalMediaSource(ctx, objectKey)
+	if err != nil {
+		return nil, err
+	}
+	return []mediaFile{source}, nil
 }
 
 func (h *Handler) productionProxyRequeue(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +118,7 @@ func (h *Handler) logicalMediaSourcesRecursive(ctx context.Context, prefix strin
 	byDirectory := make(map[string][]string)
 	for _, line := range lines {
 		relative := strings.Trim(strings.TrimSpace(line), "/")
-		if relative == "" || !isVideoFile(relative) || isDerivedRecordingPath(prefix+relative) {
+		if relative == "" || !isVideoFile(relative) || isProductionWorkspacePath(prefix+relative) {
 			continue
 		}
 		directory, name := path.Split(relative)
@@ -105,13 +136,8 @@ func (h *Handler) logicalMediaSourcesRecursive(ctx context.Context, prefix strin
 	return sources, nil
 }
 
-func isDerivedRecordingPath(objectKey string) bool {
-	for _, marker := range []string{"/recordings/workspace/", "/recordings/edits/", "/recordings/normalized/", "/recordings/assets/"} {
-		if strings.Contains(objectKey, marker) {
-			return true
-		}
-	}
-	return false
+func isProductionWorkspacePath(objectKey string) bool {
+	return strings.Contains(objectKey, "/recordings/workspace/")
 }
 
 func productionProxyObjectKey(conference string, source mediaFile) string {

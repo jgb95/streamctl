@@ -60,7 +60,7 @@ func TestProductionWorkspaceLoadsCandidatesAndCuts(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Timestamp talks", "Conference workspace", `value="toronto"`, "selected", `onchange="this.form.submit()"`, `/production/media?conference=toronto`, `/production/timestamp?conference=toronto`, "A useful talk", "Day 1", "Main", "Wed, Jul 22, 2026", "10:00 AM–10:30 AM", "1 cut"} {
+	for _, want := range []string{"Timestamp talks", "Conference workspace", `value="toronto"`, "selected", `onchange="this.form.submit()"`, `/production/timestamp?conference=toronto`, "A useful talk", "Day 1", "Main", "Wed, Jul 22, 2026", "10:00 AM–10:30 AM", "1 cut"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("workspace omitted %q: %s", want, body)
 		}
@@ -126,17 +126,50 @@ func TestProductionTimestampStartsWithConferenceDropdown(t *testing.T) {
 }
 
 func TestProductionOverviewKeepsConferenceInNavigation(t *testing.T) {
-	h := &Handler{funcs: template.FuncMap{}, BTCPP: productionCandidatesStub{conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++"}}}}
+	database := productionHandlerTestDB(t)
+	if err := database.ReplaceProductionCuts("toronto", "talk-1", []db.ProductionCut{{Source: "toronto/recordings/raw/mix/main.mp4", SourceType: "video", InMS: 1000, OutMS: 2000}}); err != nil {
+		t.Fatal(err)
+	}
+	finished, _, err := database.EnqueueProductionProxyJob("toronto/recordings/raw/mix/main.mp4", "toronto/recordings/workspace/proxies/raw/mix/main.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ClaimProductionProxyJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FinishProductionProxyJob(finished.ID, 1000); err != nil {
+		t.Fatal(err)
+	}
+	failed, _, err := database.EnqueueProductionProxyJob("toronto/recordings/raw/mix/talks.mp4", "toronto/recordings/workspace/proxies/raw/mix/talks.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ClaimProductionProxyJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FailProductionProxyJob(failed.ID, context.DeadlineExceeded); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: database, funcs: template.FuncMap{}, BTCPPBaseURL: "https://btcpp.dev", BTCPP: productionCandidatesStub{
+		conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++"}},
+		candidates: []btcppclient.Candidate{
+			{TalkID: "talk-1", Recording: &btcppclient.Recording{ID: "recording-1", PublishedAt: stringPointer("2026-08-01T12:00:00Z")}},
+			{TalkID: "talk-2", Recording: &btcppclient.Recording{ID: "recording-2", PublishedAt: stringPointer("2026-08-02T12:00:00Z")}},
+		},
+	}}
 	response := httptest.NewRecorder()
 	h.productionHome(response, httptest.NewRequest(http.MethodGet, "/production?conference=toronto", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Conference workspace", `value="toronto" selected`, `/production/media?conference=toronto`, `/production/timestamp?conference=toronto`} {
+	for _, want := range []string{"Conference workspace", `value="toronto" selected`, `/production/timestamp?conference=toronto`, "Production overview", "Media preparation", "Browse and prepare media", "1 / 2", "1 ready", "1 failed", "Ready to render", "Published recordings", ">2</div><div class=\"overview-detail\">published for this conference", "https://btcpp.dev/toronto/admin/recordings", "createProductionMediaBrowser", "mode:'manage'", "allowBucketRoot:true", "context.path===overviewRoot", `name="conference" value="toronto"`, `querySelector('#media-action-form input[name="conference"]').value`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("overview omitted %q: %s", want, body)
 		}
+	}
+	if strings.Contains(body, `>Media</a>`) || strings.Contains(body, `/production/media?`) {
+		t.Fatalf("overview retained standalone media page navigation: %s", body)
 	}
 }
 
@@ -156,7 +189,7 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "global-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy", "sourceFilename", "selectRange", "requestSubmit", "sessionStorage", "persistPlayerState", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Set In on this source first", "Wait for the preview to finish seeking", "fine-scrubber", "fineWindowMs=5000", "previewSeekTimeoutMs=4000", "queuePreviewSeek", "setPointerCapture", "previewSeekInFlight", "queuedSeekTarget", "recoverPreviewSeek", "video.onseeked=settlePreviewSeek", "seek.onpointerdown", "finishCoarseScrub", "requestAnimationFrame", "↵"} {
+	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "global-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy", "sourceFilename", "selectRange", "requestSubmit", "sessionStorage", "persistPlayerState", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Set In on this source first", "Wait for the preview to finish seeking", "fine-scrubber", "fineWindowMs=5000", "previewSeekTimeoutMs=4000", "queuePreviewSeek", "setPointerCapture", "previewSeekInFlight", "queuedSeekTarget", "recoverPreviewSeek", "video.onseeked=settlePreviewSeek", "seek.onpointerdown", "finishCoarseScrub", "requestAnimationFrame", "createProductionMediaBrowser", "file.proxyStatus==='finished'", "No prepared video files here", "↵"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}
@@ -180,45 +213,15 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 func stringPointer(value string) *string { return &value }
 
 func TestSelectedProductionConferenceFallsBackToCookie(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "/production/media", nil)
+	request := httptest.NewRequest(http.MethodGet, "/production", nil)
 	request.AddCookie(&http.Cookie{Name: productionConferenceCookie, Value: "toronto"})
 	if got := selectedProductionConference(request); got != "toronto" {
 		t.Fatalf("conference=%q", got)
 	}
-	request = httptest.NewRequest(http.MethodGet, "/production/media?conference=nairobi", nil)
+	request = httptest.NewRequest(http.MethodGet, "/production?conference=nairobi", nil)
 	request.AddCookie(&http.Cookie{Name: productionConferenceCookie, Value: "toronto"})
 	if got := selectedProductionConference(request); got != "nairobi" {
 		t.Fatalf("query did not override cookie: %q", got)
-	}
-}
-
-func TestMediaWorkspaceBrowsesConferenceRecordings(t *testing.T) {
-	binDir := t.TempDir()
-	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'main/\\ntalks/\\nclip.mp4\\nnotes.json\\n'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	h := &Handler{Remote: "btcpp:btcpp", funcs: template.FuncMap{}}
-	response := httptest.NewRecorder()
-	h.mediaWorkspace(response, httptest.NewRequest(http.MethodGet, "/production/media?conference=toronto", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	for _, want := range []string{"toronto/recordings/", "main", "talks", "clip.mp4", "notes.json"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("media browser omitted %q: %s", want, body)
-		}
-	}
-}
-
-func TestMediaWorkspaceRejectsCrossConferencePrefix(t *testing.T) {
-	h := &Handler{Remote: "btcpp:btcpp", funcs: template.FuncMap{}}
-	response := httptest.NewRecorder()
-	h.mediaWorkspace(response, httptest.NewRequest(http.MethodGet, "/production/media?conference=toronto&prefix=nairobi/recordings/", nil))
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -242,17 +245,26 @@ func TestMediaBrowserCanNavigateWholeBucket(t *testing.T) {
 	}
 }
 
-func TestMediaBrowserDefaultsToConferenceRecordings(t *testing.T) {
+func TestMediaBrowserDefaultsToConferenceRecordingsAndHidesWorkspace(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'assets/\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'assets/\\nraw/\\nworkspace/\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	h := &Handler{Remote: "btcpp:btcpp"}
 	response := httptest.NewRecorder()
 	h.mediaBrowse(response, httptest.NewRequest(http.MethodGet, "/production/media/browse?conference=toronto", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"prefix":"toronto/recordings/"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"prefix":"toronto/recordings/"`) || !strings.Contains(response.Body.String(), `"path":"toronto/recordings/raw/"`) || strings.Contains(response.Body.String(), `"path":"toronto/recordings/workspace/"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMediaBrowserRejectsWorkspacePrefix(t *testing.T) {
+	h := &Handler{Remote: "btcpp:btcpp"}
+	response := httptest.NewRecorder()
+	h.mediaBrowse(response, httptest.NewRequest(http.MethodGet, "/production/media/browse?conference=toronto&prefix=toronto/recordings/workspace/", nil))
+	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
@@ -303,7 +315,7 @@ func TestProductionProxyObjectKeyMirrorsSourceDirectory(t *testing.T) {
 	}
 }
 
-func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsDerivedMedia(t *testing.T) {
+func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsWorkspace(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
 	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/camera0000.mp4\\nraw/mix/camera0001.mp4\\nraw/mix/single.mov\\nworkspace/proxies/old.mp4\\nedits/talks/final.mp4\\nassets/bumper.mp4\\n'\n"), 0o700); err != nil {
@@ -315,8 +327,70 @@ func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsDerivedMedia(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sources) != 2 || sources[0].Path != "toronto/recordings/raw/mix/camera0000.mp4" || sources[0].SourceType != "chunkedVideo" || sources[1].Path != "toronto/recordings/raw/mix/single.mov" {
+	if len(sources) != 4 {
 		t.Fatalf("sources=%+v", sources)
+	}
+	paths := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		paths[source.Path] = true
+	}
+	for _, want := range []string{"toronto/recordings/raw/mix/camera0000.mp4", "toronto/recordings/raw/mix/single.mov", "toronto/recordings/edits/talks/final.mp4", "toronto/recordings/assets/bumper.mp4"} {
+		if !paths[want] {
+			t.Fatalf("sources omitted %q: %+v", want, sources)
+		}
+	}
+}
+
+func TestProductionProxyTargetSourcesAcceptsFolderOrLogicalFile(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *--recursive*) printf 'camera0000.mp4\\ncamera0001.mp4\\nsingle.mov\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\nsingle.mov\\n' ;;\nesac\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	folder, err := h.productionProxyTargetSources(context.Background(), "toronto", "toronto/recordings/raw/mix/")
+	if err != nil || len(folder) != 2 {
+		t.Fatalf("folder sources=%+v err=%v", folder, err)
+	}
+	file, err := h.productionProxyTargetSources(context.Background(), "toronto", "toronto/recordings/raw/mix/camera0000.mp4")
+	if err != nil || len(file) != 1 || file[0].SourceType != "chunkedVideo" || len(file[0].Chunks) != 2 {
+		t.Fatalf("file sources=%+v err=%v", file, err)
+	}
+	edits, err := h.productionProxyTargetSources(context.Background(), "toronto", "toronto/recordings/edits/talks/")
+	if err != nil || len(edits) != 2 {
+		t.Fatalf("edited sources=%+v err=%v", edits, err)
+	}
+}
+
+func TestProductionProxyTargetSourcesRejectsDerivedAndCrossConferenceMedia(t *testing.T) {
+	h := &Handler{Remote: "btcpp:btcpp"}
+	for _, target := range []string{
+		"toronto/recordings/",
+		"toronto/recordings/workspace/proxies/source.mp4",
+		"nairobi/recordings/raw/mix/source.mp4",
+	} {
+		if _, err := h.productionProxyTargetSources(context.Background(), "toronto", target); err == nil {
+			t.Fatalf("target %q was accepted", target)
+		}
+	}
+}
+
+func TestProductionProxyPrepareReturnsBrowserActionResult(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	form := url.Values{"conference": {"toronto"}, "target": {"toronto/recordings/raw/mix/"}}
+	request := httptest.NewRequest(http.MethodPost, "/production/media/prepare", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	h := &Handler{DB: productionHandlerTestDB(t), Remote: "btcpp:btcpp"}
+	h.productionProxyPrepare(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"queued":0`) || !strings.Contains(response.Body.String(), "No new editing proxy jobs were needed") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

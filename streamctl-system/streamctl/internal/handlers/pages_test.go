@@ -26,10 +26,9 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 			name:     "production overview",
 			template: "production.html",
 			data:     productionHomePage{},
-			want:     "Prepare conference media",
+			want:     "Production overview",
 		},
 		{name: "production talk list", template: "production_talks.html", data: productionTalksPage{Conference: "toronto"}, want: "Timestamp talks"},
-		{name: "media browser", template: "media.html", data: mediaWorkspacePage{}, want: "recordings/"},
 		{
 			name:     "render staging",
 			template: "render.html",

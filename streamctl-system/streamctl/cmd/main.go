@@ -198,6 +198,7 @@ func main() {
 		Systemd:             sysd,
 		OAuth:               oauthClient,
 		BTCPP:               btcppAPIClient,
+		BTCPPBaseURL:        strings.TrimRight(strings.TrimSpace(*btcppAPIBase), "/"),
 	}
 
 	mux := http.NewServeMux()

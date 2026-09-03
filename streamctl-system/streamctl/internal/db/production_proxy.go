@@ -23,6 +23,21 @@ type ProductionProxyQueue struct {
 	Queued, Running, Failed, Finished int
 }
 
+// ProductionProxyCounts returns proxy job totals for one conference without
+// listing or scanning its remote media.
+func (db *DB) ProductionProxyCounts(conference string) (ProductionProxyQueue, error) {
+	prefix := strings.TrimSpace(conference) + "/recordings/"
+	var counts ProductionProxyQueue
+	err := db.QueryRow(`
+		SELECT
+			COALESCE(SUM(status = 'queued'), 0), COALESCE(SUM(status = 'running'), 0),
+			COALESCE(SUM(status = 'failed'), 0), COALESCE(SUM(status = 'finished'), 0)
+		FROM production_proxy_jobs
+		WHERE substr(source_object_key, 1, length(?)) = ?
+	`, prefix, prefix).Scan(&counts.Queued, &counts.Running, &counts.Failed, &counts.Finished)
+	return counts, err
+}
+
 func (db *DB) EnqueueProductionProxyJob(source, proxy string) (ProductionProxyJob, bool, error) {
 	source, proxy = strings.TrimSpace(source), strings.TrimSpace(proxy)
 	if source == "" || proxy == "" {

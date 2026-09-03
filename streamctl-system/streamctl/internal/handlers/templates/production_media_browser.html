@@ -1,0 +1,42 @@
+{{define "productionMediaBrowser"}}
+<style>
+.production-media-dialog{width:min(760px,calc(100vw - 24px));max-height:80vh;padding:0;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px}.production-media-dialog::backdrop{background:rgba(0,0,0,.7)}.production-media-head{display:flex;align-items:center;gap:8px;padding:12px;border-bottom:1px solid var(--border)}.production-media-head-spacer{flex:1}.production-media-head [hidden]{display:none}.production-media-path{padding:9px 12px;color:var(--muted);overflow-wrap:anywhere}.production-media-status{padding:9px 12px;border-top:1px solid var(--border);color:var(--success)}.production-media-status.error{color:var(--danger)}.production-media-list{max-height:55vh;overflow:auto}.production-media-row{display:flex;width:100%;gap:10px;padding:10px 12px;border:0;border-top:1px solid var(--border);background:transparent;color:var(--text);text-align:left;cursor:pointer}.production-media-row:hover{background:rgba(110,168,254,.08)}.production-media-kind{width:68px;flex:0 0 auto;color:var(--muted);font-size:11px;text-transform:uppercase}.production-media-notice{padding:12px;color:var(--muted);border-top:1px solid var(--border)}.production-media-details{padding:14px;border-top:1px solid var(--border)}.production-media-details h3{margin:0 0 12px;font-size:16px;overflow-wrap:anywhere}.production-media-meta{display:grid;grid-template-columns:90px minmax(0,1fr);gap:7px 12px}.production-media-meta dt{color:var(--muted)}.production-media-meta dd{margin:0;overflow-wrap:anywhere}
+</style>
+<dialog class="production-media-dialog" id="production-media-dialog"><div class="production-media-head"><strong>Choose media</strong><button class="btn" type="button" data-media-back hidden>← Back</button><span class="production-media-head-spacer"></span><a class="btn" target="_blank" rel="noopener" data-media-open hidden>Open original</a><button class="btn" type="button" data-media-action hidden></button><button class="btn" type="button" data-media-close>Close</button></div><div class="production-media-path" data-media-path></div><div class="production-media-status" data-media-status hidden></div><div class="production-media-list" data-media-list></div></dialog>
+<script>
+function createProductionMediaBrowser({conference,defaultPrefix=`${conference}/recordings/`,allowBucketRoot=false}){
+	const dialog=document.getElementById('production-media-dialog'),title=dialog.querySelector('.production-media-head strong'),backButton=dialog.querySelector('[data-media-back]'),path=dialog.querySelector('[data-media-path]'),status=dialog.querySelector('[data-media-status]'),openLink=dialog.querySelector('[data-media-open]'),actionButton=dialog.querySelector('[data-media-action]'),list=dialog.querySelector('[data-media-list]');
+	let requestToken=0,options=null,actionContext=null;
+	function notice(message){const row=document.createElement('div');row.className='production-media-notice';row.textContent=message;return row}
+	function addRow(kind,name,onclick){const row=document.createElement('button');row.type='button';row.className='production-media-row';const kindNode=document.createElement('span'),nameNode=document.createElement('span');kindNode.className='production-media-kind';kindNode.textContent=kind;nameNode.textContent=name;row.append(kindNode,nameNode);row.onclick=onclick;list.appendChild(row)}
+	function addParent(prefix){if(prefix&&(allowBucketRoot||prefix!==defaultPrefix)){const parent=prefix.replace(/[^/]+\/$/,'');addRow('Folder','..',()=>browse(parent))}}
+	function setStatus(message='',isError=false){status.textContent=message;status.hidden=!message;status.classList.toggle('error',isError)}
+	function updateAction(context=null){actionContext=context;const action=options?.action,available=!!action&&!!context&&(!action.available||action.available(context));actionButton.hidden=!available;actionButton.textContent=!available?'':context.type==='folder'?(action.folderLabel||action.label):(action.fileLabel||action.label);actionButton.title=!available?'':context.type==='folder'?(action.folderTitle||''):(action.fileTitle||'')}
+	function fileKind(file){return file.sourceType==='chunkedVideo'?'Sequence':file.kind||'File'}
+	function showFile(file,parentPrefix){
+		requestToken++;setStatus();path.textContent=file.path;list.innerHTML='';backButton.hidden=false;backButton.onclick=()=>browse(parentPrefix);const fileConference=file.path.split('/')[0]||conference;openLink.href=`/production/media/open?conference=${encodeURIComponent(fileConference)}&path=${encodeURIComponent(file.path)}`;openLink.hidden=false;
+		const details=document.createElement('div');details.className='production-media-details';const heading=document.createElement('h3');heading.textContent=file.name;const meta=document.createElement('dl');meta.className='production-media-meta';
+		for(const [label,value] of [['Type',fileKind(file)],['Path',file.path],...(file.chunks?.length?[['Chunks',String(file.chunks.length)]]:[]),...(file.kind==='video'?[['Editing proxy',file.proxyStatus||'Not prepared']]:[])]){const term=document.createElement('dt'),description=document.createElement('dd');term.textContent=label;description.textContent=value;meta.append(term,description)}
+		details.append(heading,meta);list.appendChild(details);updateAction({type:'file',path:file.path,file,parentPrefix});
+	}
+	async function browse(prefix=null){
+		const token=++requestToken,query=new URLSearchParams({conference});if(prefix!==null)query.set('prefix',prefix);
+		try{
+			const response=await fetch('/production/media/browse?'+query);if(!response.ok)throw new Error(await response.text());const data=await response.json();if(token!==requestToken||!options)return;
+			setStatus();path.textContent=data.prefix||'/';list.innerHTML='';backButton.hidden=true;backButton.onclick=null;openLink.hidden=true;openLink.removeAttribute('href');updateAction(options.mode==='manage'?{type:'folder',path:data.prefix}:null);
+			addParent(data.prefix);
+			for(const dir of data.dirs||[])addRow('Folder',dir.name,()=>browse(dir.path));
+			const files=options.mode==='manage'?(data.files||[]):(data.files||[]).filter(file=>options.accept?options.accept(file):file.kind===options.kind);
+			for(const file of files){const chunks=(file.chunks||[]).length,kind=options.kindLabel?options.kindLabel(file):fileKind(file),name=options.nameLabel?options.nameLabel(file):(file.sourceType==='chunkedVideo'?`${file.name} · ${chunks} chunks`:file.name);addRow(kind,name,()=>{if(options.mode==='manage'){showFile(file,data.prefix);return}const selected=options;requestToken++;dialog.close();options=null;selected.onSelect(file)})}
+			if(!files.length&&!data.dirs?.length)list.appendChild(notice(options.emptyMessage||`No ${options.kind||'matching'} files here.`));
+		}catch(error){if(token===requestToken&&options){updateAction();list.innerHTML='';addParent(prefix);list.appendChild(notice(error.message||String(error)))}}
+	}
+	async function runAction(){if(!options?.action||!actionContext)return;const context=actionContext;if(options.action.confirm&&!options.action.confirm(context))return;actionButton.disabled=true;setStatus(options.action.pendingLabel||'Starting…');try{const result=await options.action.run(context);if(context.file&&result?.status)context.file.proxyStatus=result.status;setStatus(result?.message||'Action started.');updateAction(context)}catch(error){setStatus(error.message||String(error),true)}finally{actionButton.disabled=false}}
+	function open(next){options=next;requestToken++;title.textContent=next.title||(next.mode==='manage'?'Browse media':`Choose ${next.kind||'media'}`);path.textContent=defaultPrefix;setStatus();updateAction();backButton.hidden=true;backButton.onclick=null;openLink.hidden=true;openLink.removeAttribute('href');list.innerHTML='';list.appendChild(notice('Loading…'));dialog.showModal();browse(next.prefix??null)}
+	function close(){requestToken++;dialog.close();options=null;updateAction();backButton.hidden=true;backButton.onclick=null;openLink.hidden=true;openLink.removeAttribute('href');setStatus()}
+	actionButton.onclick=runAction;
+	dialog.querySelector('[data-media-close]').onclick=close;dialog.addEventListener('cancel',event=>{event.preventDefault();close()});
+	return {dialog,open,close};
+}
+</script>
+{{end}}

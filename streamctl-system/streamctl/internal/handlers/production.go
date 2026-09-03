@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,8 +34,15 @@ type productionNavView struct {
 }
 
 type productionHomePage struct {
-	Nav   productionNavView
-	Error string
+	Nav           productionNavView
+	Conference    string
+	TalksTotal    int
+	TalksCut      int
+	ReadyToRender int
+	Published     int
+	RecordingsURL string
+	ProxyCounts   db.ProductionProxyQueue
+	Error         string
 }
 
 type productionTalkView struct {
@@ -108,12 +116,75 @@ func (h *Handler) productionHome(w http.ResponseWriter, r *http.Request) {
 	conference := selectedProductionConference(r)
 	rememberProductionConference(w, r, conference)
 	conferences, conferenceError := h.productionConferences(r.Context())
-	h.render(w, r, "production.html", productionHomePage{
+	page := productionHomePage{
 		Nav: productionNavView{
 			Active: "overview", Action: "/production", Conference: conference, Conferences: conferences,
 		},
-		Error: conferenceError,
-	})
+		Conference:    conference,
+		RecordingsURL: productionRecordingsURL(h.BTCPPBaseURL, conference),
+		Error:         conferenceError,
+	}
+	if conference == "" {
+		h.render(w, r, "production.html", page)
+		return
+	}
+	if !validProductionConference(conference) {
+		page.Error = "Invalid conference tag."
+		h.renderStatus(w, r, http.StatusBadRequest, "production.html", page)
+		return
+	}
+	addError := func(err error) {
+		if err == nil {
+			return
+		}
+		if page.Error != "" {
+			page.Error += " "
+		}
+		page.Error += err.Error()
+	}
+	if conferenceError == "" {
+		talks, talksErr := h.productionTalks(r.Context(), conference)
+		if talksErr != nil {
+			addError(talksErr)
+		} else {
+			page.TalksTotal = len(talks)
+			for _, talk := range talks {
+				if talk.Recording != nil && talk.Recording.PublishedAt != nil {
+					page.Published++
+				}
+			}
+			if h.DB != nil {
+				cuts, cutsErr := h.DB.ListProductionCuts(conference)
+				if cutsErr != nil {
+					addError(cutsErr)
+				} else {
+					for _, talk := range talks {
+						if len(cuts[talk.TalkID]) > 0 {
+							page.TalksCut++
+						}
+					}
+					page.ReadyToRender = page.TalksCut
+				}
+			}
+		}
+	}
+	if h.DB != nil {
+		proxyCounts, proxyErr := h.DB.ProductionProxyCounts(conference)
+		page.ProxyCounts = proxyCounts
+		addError(proxyErr)
+	}
+	h.render(w, r, "production.html", page)
+}
+
+func productionRecordingsURL(baseURL, conference string) string {
+	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/"))
+	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") || !validProductionConference(conference) {
+		return ""
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/" + url.PathEscape(conference) + "/admin/recordings"
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String()
 }
 
 func (h *Handler) productionTimestamp(w http.ResponseWriter, r *http.Request) {
@@ -418,18 +489,6 @@ func validProductionConference(value string) bool {
 	return true
 }
 
-type mediaWorkspacePage struct {
-	Nav         productionNavView
-	Conference  string
-	Prefix      string
-	Breadcrumbs []mediaBreadcrumb
-	Dirs        []spacesEntry
-	Files       []mediaFile
-	Queued      string
-	CanPrepare  bool
-	Error       string
-}
-
 type mediaFile struct {
 	Name        string   `json:"name"`
 	Path        string   `json:"path"`
@@ -454,52 +513,6 @@ type logicalMediaInfo struct {
 	Warning     string `json:"warning,omitempty"`
 }
 
-type mediaBreadcrumb struct {
-	Name string
-	URL  string
-}
-
-func (h *Handler) mediaWorkspace(w http.ResponseWriter, r *http.Request) {
-	conference := selectedProductionConference(r)
-	rememberProductionConference(w, r, conference)
-	page := mediaWorkspacePage{Conference: conference}
-	page.Nav.Conferences, page.Error = h.productionConferences(r.Context())
-	page.Nav.Active = "media"
-	page.Nav.Action = "/production/media"
-	page.Nav.Conference = conference
-	if conference == "" {
-		h.render(w, r, "media.html", page)
-		return
-	}
-	if !validProductionConference(conference) {
-		http.Error(w, "invalid conference", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(h.Remote) == "" {
-		page.Error = "Spaces remote is not configured."
-		h.render(w, r, "media.html", page)
-		return
-	}
-	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
-	if prefix == "" {
-		prefix = conference + "/recordings/"
-	}
-	clean, err := cleanSpacesPrefix(prefix)
-	if err != nil || !strings.HasPrefix(clean, conference+"/recordings/") {
-		http.Error(w, "media path must stay inside this conference's recordings folder", http.StatusBadRequest)
-		return
-	}
-	page.Prefix = clean
-	page.Queued = strings.TrimSpace(r.URL.Query().Get("queued"))
-	page.CanPrepare = clean != conference+"/recordings/" && !isDerivedRecordingPath(clean)
-	page.Breadcrumbs = mediaBreadcrumbs(conference, clean)
-	page.Dirs, page.Files, err = h.listMediaSpacesPrefix(r.Context(), clean)
-	if err != nil {
-		page.Error = err.Error()
-	}
-	h.render(w, r, "media.html", page)
-}
-
 func (h *Handler) listMediaSpacesPrefix(ctx context.Context, prefix string) ([]spacesEntry, []mediaFile, error) {
 	lines, err := h.rcloneLsf(ctx, prefix)
 	if err != nil {
@@ -522,11 +535,6 @@ func (h *Handler) listMediaSpacesPrefix(ctx context.Context, prefix string) ([]s
 		}
 	}
 	files := groupMediaFiles(prefix, names)
-	if strings.Contains(prefix, "/recordings/workspace/") {
-		for i := range files {
-			files[i].SourceType = ""
-		}
-	}
 	h.attachProductionProxyStatuses(files)
 	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
 	return dirs, files, nil
@@ -592,7 +600,7 @@ func (h *Handler) mediaBrowse(w http.ResponseWriter, r *http.Request) {
 		prefix = conference + "/recordings/"
 	}
 	clean, err := cleanBucketPrefix(prefix)
-	if !validProductionConference(conference) || err != nil {
+	if !validProductionConference(conference) || err != nil || isProductionWorkspacePath(clean) {
 		http.Error(w, "invalid media path", http.StatusBadRequest)
 		return
 	}
@@ -601,6 +609,7 @@ func (h *Handler) mediaBrowse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	dirs = slices.DeleteFunc(dirs, func(dir spacesEntry) bool { return isProductionWorkspacePath(dir.Path) })
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(mediaBrowseResponse{Prefix: clean, Dirs: dirs, Files: files})
 }
@@ -633,7 +642,7 @@ func (h *Handler) logicalMediaInfo(ctx context.Context, objectKey string) (logic
 	}
 	info := h.attachProductionProxyInfo(logicalMediaInfo{Path: selected.Path, SourceType: selected.SourceType})
 	if info.ProxyStatus == "" {
-		info.Warning = "Prepare this recording from the Media page before cutting it."
+		info.Warning = "Prepare this recording from the Production overview before cutting it."
 	}
 	return info, nil
 }
@@ -687,20 +696,6 @@ func (h *Handler) logicalMediaSource(ctx context.Context, objectKey string) (med
 		}
 	}
 	return mediaFile{}, fmt.Errorf("media source was not found")
-}
-
-func mediaBreadcrumbs(conference, prefix string) []mediaBreadcrumb {
-	crumbs := []mediaBreadcrumb{{Name: conference, URL: "/production/media?conference=" + url.QueryEscape(conference)}}
-	relative := strings.Trim(strings.TrimPrefix(prefix, conference+"/recordings/"), "/")
-	if relative == "" {
-		return crumbs
-	}
-	current := conference + "/recordings/"
-	for _, part := range strings.Split(relative, "/") {
-		current += part + "/"
-		crumbs = append(crumbs, mediaBreadcrumb{Name: part, URL: "/production/media?conference=" + url.QueryEscape(conference) + "&prefix=" + url.QueryEscape(current)})
-	}
-	return crumbs
 }
 
 func (h *Handler) mediaOpen(w http.ResponseWriter, r *http.Request) {

@@ -94,7 +94,7 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"Standard talk", "Render settings", "+ Add segment", "A video file or numbered sequence", "The saved source ranges for each talk", "streamctl.talkCuts", "Choose media", "Save template", "Drag to reorder", "add.onclick=openSegmentDialog", "segment.type=file.sourceType"} {
+	for _, want := range []string{"Standard talk", "Render settings", "+ Add segment", "A video file or numbered sequence", "The saved source ranges for each talk", "streamctl.talkCuts", "Choose media", "Save template", "Drag to reorder", "add.onclick=openSegmentDialog", "segment.type=file.sourceType", "createProductionMediaBrowser", "allowBucketRoot:true", "kind!=='video'||file.proxyStatus==='finished'"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("template editor omitted %q: %s", want, response.Body.String())
 		}
