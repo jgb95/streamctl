@@ -129,6 +129,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production/media/open", h.auth(http.HandlerFunc(h.mediaOpen)))
 	mux.Handle("/production/media/prepare", h.mutation(http.HandlerFunc(h.productionProxyPrepare)))
 	mux.Handle("/production/cuts/save", h.mutation(http.HandlerFunc(h.productionCutsSave)))
+	mux.Handle("/production/templates", h.auth(http.HandlerFunc(h.productionTemplates)))
+	mux.Handle("/production/templates/edit", h.auth(http.HandlerFunc(h.productionTemplateEdit)))
+	mux.Handle("/production/templates/create", h.mutation(http.HandlerFunc(h.productionTemplateCreate)))
+	mux.Handle("/production/templates/save", h.mutation(http.HandlerFunc(h.productionTemplateSave)))
+	mux.Handle("/production/templates/duplicate", h.mutation(http.HandlerFunc(h.productionTemplateDuplicate)))
+	mux.Handle("/production/templates/delete", h.mutation(http.HandlerFunc(h.productionTemplateDelete)))
 	mux.Handle("/normalize", h.auth(http.HandlerFunc(h.normalizationFiles)))
 	mux.Handle("/normalize/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
 	mux.Handle("/normalize/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
@@ -3461,23 +3467,31 @@ func isRemoteClip(source string) bool {
 }
 
 func cleanSpacesPrefix(prefix string) (string, error) {
+	clean, err := cleanBucketPrefix(prefix)
+	if err != nil || clean == "" {
+		return clean, err
+	}
+	parts := strings.Split(strings.TrimSuffix(clean, "/"), "/")
+	if len(parts) < 2 || parts[1] != "recordings" {
+		return "", fmt.Errorf("Spaces prefix must be inside <conference>/recordings")
+	}
+	return clean, nil
+}
+
+func cleanBucketPrefix(prefix string) (string, error) {
 	prefix = strings.TrimSpace(strings.ReplaceAll(prefix, "\\", "/"))
 	prefix = strings.Trim(prefix, "/")
 	if prefix == "" {
 		return "", nil
 	}
-	clean := path.Clean(prefix)
-	if clean == "." {
-		return "", nil
-	}
-	parts := strings.Split(clean, "/")
-	for _, part := range parts {
+	for _, part := range strings.Split(prefix, "/") {
 		if part == "" || part == "." || part == ".." {
 			return "", fmt.Errorf("bad Spaces prefix: %q", prefix)
 		}
 	}
-	if len(parts) < 2 || parts[1] != "recordings" {
-		return "", fmt.Errorf("Spaces prefix must be inside <conference>/recordings")
+	clean := path.Clean(prefix)
+	if clean == "." {
+		return "", nil
 	}
 	return clean + "/", nil
 }
@@ -3488,6 +3502,37 @@ func isVideoFile(name string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isImageFile(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAudioFile(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus":
+		return true
+	default:
+		return false
+	}
+}
+
+func mediaFileKind(name string) string {
+	switch {
+	case isVideoFile(name):
+		return "video"
+	case isImageFile(name):
+		return "image"
+	case isAudioFile(name):
+		return "audio"
+	default:
+		return "other"
 	}
 }
 

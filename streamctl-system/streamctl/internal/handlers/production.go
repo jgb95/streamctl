@@ -433,6 +433,7 @@ type mediaWorkspacePage struct {
 type mediaFile struct {
 	Name        string   `json:"name"`
 	Path        string   `json:"path"`
+	Kind        string   `json:"kind,omitempty"`
 	SourceType  string   `json:"sourceType,omitempty"`
 	Chunks      []string `json:"chunks,omitempty"`
 	ProxyStatus string   `json:"proxyStatus,omitempty"`
@@ -568,7 +569,7 @@ func groupMediaFiles(prefix string, names []string) []mediaFile {
 			chunks[i] = prefix + item.name
 			consumed[item.name] = true
 		}
-		files = append(files, mediaFile{Name: group[0].name + " … " + group[len(group)-1].name, Path: chunks[0], SourceType: "chunkedVideo", Chunks: chunks})
+		files = append(files, mediaFile{Name: group[0].name, Path: chunks[0], Kind: "video", SourceType: "chunkedVideo", Chunks: chunks})
 	}
 	for _, name := range names {
 		if consumed[name] {
@@ -578,7 +579,7 @@ func groupMediaFiles(prefix string, names []string) []mediaFile {
 		if isVideoFile(name) {
 			sourceType = "video"
 		}
-		files = append(files, mediaFile{Name: name, Path: prefix + name, SourceType: sourceType})
+		files = append(files, mediaFile{Name: name, Path: prefix + name, Kind: mediaFileKind(name), SourceType: sourceType})
 	}
 	sort.Slice(files, func(i, j int) bool { return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name) })
 	return files
@@ -586,12 +587,12 @@ func groupMediaFiles(prefix string, names []string) []mediaFile {
 
 func (h *Handler) mediaBrowse(w http.ResponseWriter, r *http.Request) {
 	conference := strings.TrimSpace(r.URL.Query().Get("conference"))
-	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
-	if prefix == "" {
+	prefix := r.URL.Query().Get("prefix")
+	if !r.URL.Query().Has("prefix") {
 		prefix = conference + "/recordings/"
 	}
-	clean, err := cleanSpacesPrefix(prefix)
-	if !validProductionConference(conference) || err != nil || !strings.HasPrefix(clean, conference+"/recordings/") {
+	clean, err := cleanBucketPrefix(prefix)
+	if !validProductionConference(conference) || err != nil {
 		http.Error(w, "invalid media path", http.StatusBadRequest)
 		return
 	}

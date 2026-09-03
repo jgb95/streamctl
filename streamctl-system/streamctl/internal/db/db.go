@@ -158,6 +158,17 @@ CREATE TABLE IF NOT EXISTS production_cuts (
 
 CREATE INDEX IF NOT EXISTS production_cuts_conference_idx ON production_cuts (conference, talk_id, position);
 
+CREATE TABLE IF NOT EXISTS production_templates (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	conference TEXT NOT NULL,
+	name TEXT NOT NULL,
+	template_json TEXT NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS production_templates_conference_idx ON production_templates (conference, updated_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS production_proxy_jobs (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	source_object_key TEXT NOT NULL UNIQUE,

@@ -222,6 +222,41 @@ func TestMediaWorkspaceRejectsCrossConferencePrefix(t *testing.T) {
 	}
 }
 
+func TestMediaBrowserCanNavigateWholeBucket(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'toronto/\\nnairobi/\\nshared.mp4\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	response := httptest.NewRecorder()
+	h.mediaBrowse(response, httptest.NewRequest(http.MethodGet, "/production/media/browse?conference=toronto&prefix=", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"prefix":""`, `"path":"toronto/"`, `"path":"nairobi/"`, `"path":"shared.mp4"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("bucket browser omitted %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestMediaBrowserDefaultsToConferenceRecordings(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'assets/\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	response := httptest.NewRecorder()
+	h.mediaBrowse(response, httptest.NewRequest(http.MethodGet, "/production/media/browse?conference=toronto", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"prefix":"toronto/recordings/"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestGroupMediaFilesUsesGeneralizedConfRenderChunkRule(t *testing.T) {
 	files := groupMediaFiles("toronto/recordings/raw/mix/", []string{
 		"camera-0000.mp4", "camera-0001.mp4", "camera-0002.mp4", "single.mp4", "notes.json",
@@ -235,8 +270,18 @@ func TestGroupMediaFilesUsesGeneralizedConfRenderChunkRule(t *testing.T) {
 			sequence = &files[i]
 		}
 	}
-	if sequence == nil || sequence.Path != "toronto/recordings/raw/mix/camera-0000.mp4" || len(sequence.Chunks) != 3 {
+	if sequence == nil || sequence.Name != "camera-0000.mp4" || sequence.Kind != "video" || sequence.Path != "toronto/recordings/raw/mix/camera-0000.mp4" || len(sequence.Chunks) != 3 {
 		t.Fatalf("sequence=%+v", sequence)
+	}
+}
+
+func TestMediaFileKind(t *testing.T) {
+	for _, test := range []struct{ name, want string }{
+		{"clip.mp4", "video"}, {"card.PNG", "image"}, {"music.wav", "audio"}, {"notes.json", "other"},
+	} {
+		if got := mediaFileKind(test.name); got != test.want {
+			t.Fatalf("mediaFileKind(%q)=%q want %q", test.name, got, test.want)
+		}
 	}
 }
 
