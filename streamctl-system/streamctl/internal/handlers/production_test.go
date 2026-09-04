@@ -189,13 +189,38 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "global-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "video.onloadedmetadata", "Loading editing proxy", "sourceFilename", "selectRange", "requestSubmit", "sessionStorage", "persistPlayerState", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Set In on this source first", "Wait for the preview to finish seeking", "fine-scrubber", "fineWindowMs=5000", "previewSeekTimeoutMs=4000", "queuePreviewSeek", "setPointerCapture", "previewSeekInFlight", "queuedSeekTarget", "recoverPreviewSeek", "video.onseeked=settlePreviewSeek", "seek.onpointerdown", "finishCoarseScrub", "requestAnimationFrame", "createProductionMediaBrowser", "file.proxyStatus==='finished'", "No prepared video files here", "↵"} {
+	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next →", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "cutter-head", "position:sticky", "talk-meta-separator", "cutter-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "cutter-side", "media-preview-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "bindVideo", "Loading editing proxy", "sourceFilename", "selectRange", "selectRange(index,'inMs')", "selectRange(index,'outMs')", "inheritPreviewSource", "range-source", "openMedia(index)", "requestSubmit", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Wait for the preview to finish seeking", "preview.ready", "rangeSetKey", "range[rangeSetKey(key)]=true", "if(!range){range=newRange(currentSource,currentSourceType)", "media-preview-fine", "media-preview-fine-row", "media-preview-play", "togglePlayback", "onMark:key=>mark", "fineWindowMs=5000", "seekTimeoutMs=4000", "mediaSession", "queueSeek", "setPointerCapture", "seekInFlight", "queuedSeekTarget", "recover", "node.onseeked", "seek.onpointerdown", "finishCoarse", "requestAnimationFrame", "createProductionMediaBrowser", "createProductionMediaPreview", "media-preview-mark-in", "preview.setMarks", "removeRange", "addRange", "+ New segment", "needsMedia=!inheritPreviewSource(range)", "if(needsMedia)openMedia(activeRange)", "if(!ranges.length&&currentSource)ranges.push(newRange(currentSource,currentSourceType))", "activeRange=-1", "inSet", "outSet", "file.proxyStatus==='finished'", "No prepared video files here", "maxCachedVideos=2", "preview.playing()", "Save & next →':'Save & close", "function talksURL()", "else location.href=talksURL()"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}
 	}
+	for _, want := range []string{"grid-template-columns:auto minmax(0,1fr) auto", "@media(max-width:900px)", "position:fixed", "env(safe-area-inset-bottom)"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("cutter omitted responsive navigation %q: %s", want, body)
+		}
+	}
+	for _, want := range []string{"media-preview-current", "Current timestamp", "parseTimecode", "currentLabel.onchange", "currentLabel.select()"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("cutter omitted editable timestamp behavior %q: %s", want, body)
+		}
+	}
+	if !strings.Contains(body, "resumeAfterSeek=drag.moved&&!cancelled?false:drag.wasPlaying") {
+		t.Fatalf("fine ribbon does not pause playback after scrubbing: %s", body)
+	}
+	if !strings.Contains(body, "cancelled||!drag.moved?drag.startMs:drag.targetMs") {
+		t.Fatalf("fine ribbon retained click-to-seek behavior: %s", body)
+	}
+	if navigation, editor := strings.Index(body, `class="save-navigation"`), strings.Index(body, `class="editor"`); navigation < 0 || editor < 0 || navigation > editor {
+		t.Fatalf("cutter navigation is not inside the sticky header: %s", body)
+	}
 	if count := strings.Count(body, ">Choose media</button>"); count != 1 {
 		t.Fatalf("cutter rendered %d media selectors; want one: %s", count, body)
+	}
+	if strings.Contains(body, `id="source-pick"`) {
+		t.Fatalf("cutter retained the player-level media selector: %s", body)
+	}
+	if strings.Contains(body, "media-preview-jump") {
+		t.Fatalf("cutter retained the In/Out jump controls: %s", body)
 	}
 	if strings.Contains(body, "Select a talk") {
 		t.Fatalf("dedicated cutter retained placeholder: %s", body)
@@ -203,7 +228,13 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 	if strings.Contains(body, "location.assign") {
 		t.Fatalf("cutter still reloads between talks: %s", body)
 	}
-	for _, unwanted := range []string{"next-chunk", "/production/media/preview", "Timed out waiting for video", "locateChunk", "loadChunk", "pendingSeek", "#t="} {
+	if strings.Contains(body, "editor-toolbar") {
+		t.Fatalf("cutter retained controls outside the shared preview card: %s", body)
+	}
+	if strings.Contains(body, "range[key+'Set']") {
+		t.Fatalf("cutter writes the nonexistent inMsSet/outMsSet flags: %s", body)
+	}
+	for _, unwanted := range []string{"next-chunk", "/production/media/preview", "Timed out waiting for video", "locateChunk", "loadChunk", "pendingSeek", "#t=", "sessionStorage", "savedState"} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("direct cutter retained %q: %s", unwanted, body)
 		}
@@ -266,6 +297,30 @@ func TestMediaBrowserRejectsWorkspacePrefix(t *testing.T) {
 	h.mediaBrowse(response, httptest.NewRequest(http.MethodGet, "/production/media/browse?conference=toronto&prefix=toronto/recordings/workspace/", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMediaOpenDoesNotCacheSignedRedirect(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'https://spaces.example/proxy.mp4?signature=test\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/production/media/open?conference=toronto&path=toronto/recordings/workspace/proxies/raw/mix/talk.mp4", nil)
+
+	h.mediaOpen(response, request)
+
+	if response.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got, want := response.Header().Get("Location"), "https://spaces.example/proxy.mp4?signature=test"; got != want {
+		t.Fatalf("Location=%q want %q", got, want)
+	}
+	if got, want := response.Header().Get("Cache-Control"), "private, no-store"; got != want {
+		t.Fatalf("Cache-Control=%q want %q", got, want)
 	}
 }
 
@@ -494,6 +549,26 @@ func TestProductionCutsSavePersistsFormRanges(t *testing.T) {
 	}
 	cuts, err := database.ListProductionCuts("toronto")
 	if err != nil || len(cuts["talk-1"]) != 2 || cuts["talk-1"][1].OutMS != 4500 {
+		t.Fatalf("cuts=%+v err=%v", cuts, err)
+	}
+}
+
+func TestProductionCutsSaveClearsAllRanges(t *testing.T) {
+	database := productionHandlerTestDB(t)
+	if err := database.ReplaceProductionCuts("toronto", "talk-1", []db.ProductionCut{{Source: "toronto/recordings/main.mp4", SourceType: "video", InMS: 1000, OutMS: 2000}}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: database}
+	form := url.Values{"conference": {"toronto"}, "talk_id": {"talk-1"}}
+	request := httptest.NewRequest(http.MethodPost, "/production/cuts/save", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	h.productionCutsSave(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	cuts, err := database.ListProductionCuts("toronto")
+	if err != nil || len(cuts["talk-1"]) != 0 {
 		t.Fatalf("cuts=%+v err=%v", cuts, err)
 	}
 }

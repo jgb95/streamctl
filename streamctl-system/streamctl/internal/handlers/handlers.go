@@ -3608,7 +3608,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

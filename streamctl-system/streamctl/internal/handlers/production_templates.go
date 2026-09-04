@@ -94,6 +94,11 @@ type productionTemplateTalkCutsSegment struct {
 	Overlay *string `json:"overlay"`
 }
 
+type productionTemplateTalkCardSegment struct {
+	Type       string `json:"type"`
+	DurationMS *int   `json:"durationMs"`
+}
+
 var productionTemplateBitrate = regexp.MustCompile(`^[1-9][0-9]*(?:[kKmMgG])?$`)
 var productionTemplateTimecode = regexp.MustCompile(`^(\d{2,}):(\d{2}):(\d{2})(?:\.(\d{3}))?$`)
 
@@ -367,6 +372,15 @@ func validateProductionTemplateSegment(raw json.RawMessage) error {
 			return err
 		}
 		return validateProductionTemplateExtras(segment.Overlay, nil)
+	case "streamctl.talkCard":
+		var segment productionTemplateTalkCardSegment
+		if err := decodeStrictJSON(raw, &segment); err != nil {
+			return err
+		}
+		if segment.DurationMS != nil && *segment.DurationMS <= 0 {
+			return errors.New("durationMs must be greater than zero")
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported type %q", header.Type)
 	}

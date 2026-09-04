@@ -18,6 +18,7 @@ func TestValidateProductionTemplate(t *testing.T) {
 		"segments": [
 			{"type":"image","src":"toronto/recordings/assets/card.png","durationMs":4000},
 			{"type":"video","src":"toronto/recordings/assets/intro.mp4","in":"00:00:01.000","out":"00:00:03.000","overlay":"toronto/recordings/assets/bug.png","transcribe":false},
+			{"type":"streamctl.talkCard","durationMs":5000},
 			{"type":"streamctl.talkCuts","overlay":"toronto/recordings/assets/bug.png"}
 		]
 	}`
@@ -25,7 +26,7 @@ func TestValidateProductionTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"version": 1`, `"type": "streamctl.talkCuts"`, `"src": "toronto/recordings/assets/intro.mp4"`} {
+	for _, want := range []string{`"version": 1`, `"type": "streamctl.talkCard"`, `"type": "streamctl.talkCuts"`, `"src": "toronto/recordings/assets/intro.mp4"`} {
 		if !strings.Contains(canonical, want) {
 			t.Fatalf("canonical template omitted %q: %s", want, canonical)
 		}
@@ -49,6 +50,8 @@ func TestValidateProductionTemplateRejectsInvalidDefinitions(t *testing.T) {
 		{"video used as audio", `{"version":1,"settings":{},"segments":[{"type":"video","src":"toronto/recordings/intro.mp4","audio":{"src":"toronto/recordings/music.mp4"}}]}`},
 		{"dynamic source", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts","src":"toronto/recordings/raw.mp4"}]}`},
 		{"dynamic transcription", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts","transcribe":true}]}`},
+		{"talk card source", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard","src":"toronto/card.png"}]}`},
+		{"talk card duration", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard","durationMs":0}]}`},
 		{"bad window", `{"version":1,"settings":{},"segments":[{"type":"video","src":"toronto/recordings/raw.mp4","in":"00:00:05.000","out":"00:00:04.000"}]}`},
 		{"unknown type", `{"version":1,"settings":{},"segments":[{"type":"streamctl.magic"}]}`},
 	}
@@ -94,10 +97,16 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"Standard talk", "Render settings", "+ Add segment", "A video file or numbered sequence", "The saved source ranges for each talk", "streamctl.talkCuts", "Choose media", "Save template", "Drag to reorder", "add.onclick=openSegmentDialog", "segment.type=file.sourceType", "createProductionMediaBrowser", "allowBucketRoot:true", "kind!=='video'||file.proxyStatus==='finished'"} {
+	for _, want := range []string{"Standard talk", "Render settings", "+ Add segment", "A video file or numbered sequence", "The current talk’s saved 1080p social card", "The saved source ranges for each talk", "streamctl.talkCard", "streamctl.talkCuts", "Choose media", "Duplicate", "Delete", ">Save</button>", "form=\"template-form\"", "template-editor-head", "min-height:66px", "template-editor-title", "template-actions", "position:sticky", "position:fixed", "safe-area-inset-bottom", "Drag to reorder", "template-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "template-side", "add.onclick=openSegmentDialog", "segment.type=file.sourceType", "createProductionMediaBrowser", "createProductionMediaPreview", "onMark:markPreview", "previewSelected(atMs)", "selectSegment(index,value)", "markPreview", "media-preview-mark-in", "media-preview-fine-row", "preview.setMarks", "Out must be after In", "allowBucketRoot:true", "kind!=='video'||file.proxyStatus==='finished'"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("template editor omitted %q: %s", want, response.Body.String())
 		}
+	}
+	if strings.Contains(response.Body.String(), "template-preview-actions") {
+		t.Fatalf("template editor retained controls outside the shared preview card: %s", response.Body.String())
+	}
+	if strings.Index(response.Body.String(), "template-actions") > strings.Index(response.Body.String(), "template-editor\"") {
+		t.Fatalf("template actions are not in the sticky editor header: %s", response.Body.String())
 	}
 }
 

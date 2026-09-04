@@ -701,7 +701,7 @@ func (h *Handler) logicalMediaSource(ctx context.Context, objectKey string) (med
 func (h *Handler) mediaOpen(w http.ResponseWriter, r *http.Request) {
 	conference := strings.TrimSpace(r.URL.Query().Get("conference"))
 	objectKey := strings.Trim(strings.TrimSpace(r.URL.Query().Get("path")), "/")
-	if !validProductionConference(conference) || !strings.HasPrefix(objectKey, conference+"/recordings/") {
+	if !validProductionConference(conference) || !strings.HasPrefix(objectKey, conference+"/") {
 		http.Error(w, "invalid media path", http.StatusBadRequest)
 		return
 	}
@@ -715,6 +715,7 @@ func (h *Handler) mediaOpen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
 	http.Redirect(w, r, link, http.StatusTemporaryRedirect)
 }
 
