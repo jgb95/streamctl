@@ -377,7 +377,7 @@ func TestVisibleGPUQueueItemsExcludeFinished(t *testing.T) {
 	}
 }
 
-func TestVisibleRenderQueueItemsExcludeFinished(t *testing.T) {
+func TestVisibleRenderQueueItemsIncludeFinishedHistory(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -412,7 +412,7 @@ func TestVisibleRenderQueueItemsExcludeFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(visible) != 1 || visible[0].ID != failed.ID {
-		t.Fatalf("visible items should include failed but not finished: %#v", visible)
+	if len(visible) != 2 || visible[0].ID != failed.ID || visible[1].ID != finished.ID {
+		t.Fatalf("visible items should include failures and finished history: %#v", visible)
 	}
 }

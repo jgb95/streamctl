@@ -153,6 +153,45 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 .production-nav a, .production-nav span { flex: 0 0 auto; padding: 7px 11px; border-radius: 5px; color: var(--muted); text-decoration: none; }
 .production-nav a:hover, .production-nav a.active { color: var(--text); background: var(--panel); }
 .production-nav span { opacity: .45; }
+.production-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
+.production-page-head h2 { margin: 0 0 3px; }
+.production-list-toolbar { min-height: 43px; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 7px 7px 0 0; background: var(--panel); }
+.production-list-toolbar label { display: flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
+.production-list-toolbar input, .production-list-check { accent-color: var(--accent); }
+.production-list-toolbar .selection-spacer { flex: 1; }
+.production-list-toolbar .selection-count { display: none; }
+.production-list-toolbar .selection-actions { display: flex; gap: 8px; visibility: hidden; }
+.production-list-toolbar.has-selection .selection-idle { display: none; }
+.production-list-toolbar.has-selection .selection-count { display: inline; }
+.production-list-toolbar.has-selection .selection-actions { visibility: visible; }
+.production-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 7px 7px; overflow: hidden; }
+.production-list-item { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; background: var(--panel); border-bottom: 1px solid var(--border); }
+.production-list-item:last-child { border-bottom: 0; }
+.production-list-item:hover { background: rgba(110,168,254,.08); }
+.production-list-check { margin: 0 0 0 15px; }
+.production-list-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 14px; min-width: 0; padding: 15px; color: var(--text); text-decoration: none; }
+.production-list-row strong, .production-list-row span { display: block; }
+.production-list-meta { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.production-list-side { display: flex; align-items: center; gap: 10px; }
+.production-list-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.production-notice { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+.bulk-form { display: none; }
+.production-quick-create { padding: 0; border: 0; background: none; }
+.production-create-trigger { display: inline-flex; align-items: center; justify-content: center; min-width: 126px; min-height: 34px; margin: 0; padding: 6px 12px; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.production-new-menu { position: relative; }
+.production-new-menu > summary { list-style: none; white-space: nowrap; }
+.production-new-menu > summary::-webkit-details-marker { display: none; }
+.production-new-popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; width: 300px; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); box-shadow: 0 12px 30px rgba(0,0,0,.35); }
+.production-new-option, .production-new-option-form button { display: block; width: 100%; padding: 11px 12px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.production-new-option:hover, .production-new-option-form button:hover { background: rgba(110,168,254,.08); }
+.production-new-option:disabled { opacity: .5; cursor: default; }
+.production-new-option:disabled:hover { background: transparent; }
+.production-new-option strong, .production-new-option span, .production-new-option-form strong, .production-new-option-form span { display: block; }
+.production-new-option span, .production-new-option-form span { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.production-new-option-form { padding: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: none; }
+.production-template-picker { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; padding: 10px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: var(--bg); }
+.production-template-picker[hidden] { display: none; }
+.production-template-picker select { min-width: 0; width: 100%; padding: 7px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
 .workspace-selector { display: flex; align-items: end; gap: 8px; padding: 12px; margin-bottom: 18px; }
 .workspace-selector .field { flex: 1; margin: 0; }
 @media (max-width: 760px) {
@@ -169,8 +208,24 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 	.proxy-job-head form { grid-column: 2; }
 	.queue-table { min-width: 860px; }
 	.worker-meta { grid-template-columns: 1fr; }
+	.production-page-head { align-items: stretch; flex-direction: column; }
+	.production-page-head > .btn { width: 100%; text-align: center; }
+	.production-list-toolbar { flex-wrap: wrap; }
+	.production-list-toolbar .selection-actions { width: 100%; }
+	.production-list-toolbar .selection-actions .btn { flex: 1; }
+	.production-list-row { grid-template-columns: 1fr; gap: 8px; padding: 13px; }
+	.production-list-side { justify-content: space-between; }
+	.production-new-menu, .production-quick-create, .production-create-trigger { width: 100%; text-align: center; }
+	.production-new-popover { left: 0; right: 0; width: auto; }
 }
 </style>
+<script>
+function wireProductionSelection(root){
+	const itemRoot=document.querySelector(root.dataset.selectionTarget)||root,all=root.querySelector('[data-select-all]'),items=[...itemRoot.querySelectorAll('[data-select-item]')],count=root.querySelector('[data-selected-count]'),buttons=[...root.querySelectorAll('[data-selection-action]')];
+	function update(){const selected=items.filter(item=>item.checked);root.classList.toggle('has-selection',selected.length>0);all.checked=selected.length>0&&selected.length===items.length;all.indeterminate=selected.length>0&&selected.length<items.length;if(count)count.textContent=String(selected.length);for(const button of buttons){const requirement=button.dataset.selectionAction;button.disabled=!selected.length||selected.some(item=>item.dataset[requirement]!=='true')}}
+	all?.addEventListener('change',()=>{for(const item of items)item.checked=all.checked;update()});for(const item of items)item.addEventListener('change',update);update();return {selected:()=>items.filter(item=>item.checked)}
+}
+</script>
 </head>
 <body>
 <header>
@@ -200,5 +255,5 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 {{end}}
 {{define "productionNav"}}
 <form class="workspace-selector" method="get" action="{{.Action}}"><div class="field"><label for="conference">Conference workspace</label><select id="conference" name="conference" required onchange="this.form.submit()"><option value="">Select a conference…</option>{{range .Conferences}}<option value="{{.Tag}}" {{if eq .Tag $.Conference}}selected{{end}}>{{if .Description}}{{.Description}} — {{end}}{{.Tag}} · {{.Date}}</option>{{end}}</select></div></form>
-<nav class="production-nav"><a {{if eq .Active "overview"}}class="active"{{end}} href="/production{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Overview</a><a {{if eq .Active "timestamp"}}class="active"{{end}} href="/production/timestamp{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Talks</a><a {{if eq .Active "templates"}}class="active"{{end}} href="/production/templates{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Templates</a><span>Renders · soon</span></nav>
+<nav class="production-nav"><a {{if eq .Active "overview"}}class="active"{{end}} href="/production{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Overview</a><a {{if eq .Active "timestamp"}}class="active"{{end}} href="/production/timestamp{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Talks</a><a {{if eq .Active "templates"}}class="active"{{end}} href="/production/templates{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Templates</a><a {{if eq .Active "renders"}}class="active"{{end}} href="/production/renders{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Renders</a></nav>
 {{end}}

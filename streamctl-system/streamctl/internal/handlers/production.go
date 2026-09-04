@@ -173,6 +173,13 @@ func (h *Handler) productionHome(w http.ResponseWriter, r *http.Request) {
 		page.ProxyCounts = proxyCounts
 		addError(proxyErr)
 	}
+	if strings.TrimSpace(h.Remote) != "" {
+		if ready, proxyErr := h.productionProxyArtifactCount(r.Context(), conference); proxyErr != nil {
+			addError(proxyErr)
+		} else {
+			page.ProxyCounts.Finished = ready
+		}
+	}
 	h.render(w, r, "production.html", page)
 }
 
@@ -535,7 +542,7 @@ func (h *Handler) listMediaSpacesPrefix(ctx context.Context, prefix string) ([]s
 		}
 	}
 	files := groupMediaFiles(prefix, names)
-	h.attachProductionProxyStatuses(files)
+	h.attachProductionProxyStatuses(ctx, files)
 	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
 	return dirs, files, nil
 }
@@ -640,46 +647,69 @@ func (h *Handler) logicalMediaInfo(ctx context.Context, objectKey string) (logic
 	if err != nil {
 		return logicalMediaInfo{}, err
 	}
-	info := h.attachProductionProxyInfo(logicalMediaInfo{Path: selected.Path, SourceType: selected.SourceType})
+	info := h.attachProductionProxyInfo(ctx, logicalMediaInfo{Path: selected.Path, SourceType: selected.SourceType})
 	if info.ProxyStatus == "" {
 		info.Warning = "Prepare this recording from the Production overview before cutting it."
 	}
 	return info, nil
 }
 
-func (h *Handler) attachProductionProxyStatuses(files []mediaFile) {
-	if h.DB == nil {
+func (h *Handler) attachProductionProxyStatuses(ctx context.Context, files []mediaFile) {
+	for i := range files {
+		if files[i].SourceType == "" {
+			continue
+		}
+		if h.DB != nil {
+			if job, err := h.DB.ProductionProxyJobBySource(files[i].Path); err == nil {
+				files[i].ProxyStatus = job.Status
+			}
+		}
+	}
+	if strings.TrimSpace(h.Remote) == "" {
+		return
+	}
+	proxies, err := h.productionProxyArtifactsForSources(ctx, files)
+	if err != nil {
 		return
 	}
 	for i := range files {
 		if files[i].SourceType == "" {
 			continue
 		}
-		job, err := h.DB.ProductionProxyJobBySource(files[i].Path)
-		if err != nil {
-			continue
+		proxy := productionProxyObjectKey(productionConferenceFromRecording(files[i].Path), files[i])
+		if proxies[proxy] {
+			files[i].ProxyStatus = "finished"
+		} else if files[i].ProxyStatus == "finished" {
+			files[i].ProxyStatus = ""
 		}
-		files[i].ProxyStatus = job.Status
 	}
 }
 
-func (h *Handler) attachProductionProxyInfo(info logicalMediaInfo) logicalMediaInfo {
-	if h.DB == nil {
-		return info
+func (h *Handler) attachProductionProxyInfo(ctx context.Context, info logicalMediaInfo) logicalMediaInfo {
+	if h.DB != nil {
+		if job, err := h.DB.ProductionProxyJobBySource(info.Path); err == nil {
+			info.ProxyStatus = job.Status
+			info.DurationMS = job.DurationMS
+			if job.Status == "finished" {
+				info.ProxyPath = job.Proxy
+			} else if job.Status == "failed" {
+				info.Warning = "Proxy preparation failed: " + job.LastError
+			} else if job.Status != "finished" {
+				info.Warning = "Editing proxy is " + job.Status + "."
+			}
+		}
 	}
-	job, err := h.DB.ProductionProxyJobBySource(info.Path)
-	if err != nil {
-		return info
-	}
-	info.ProxyStatus = job.Status
-	if job.Status == "finished" {
-		info.ProxyPath = job.Proxy
-		info.DurationMS = job.DurationMS
+	source := mediaFile{Path: info.Path, SourceType: info.SourceType}
+	proxy := productionProxyObjectKey(productionConferenceFromRecording(info.Path), source)
+	present, checked := h.productionProxyArtifactPresent(ctx, proxy)
+	if present {
+		info.ProxyStatus = "finished"
+		info.ProxyPath = proxy
 		info.Warning = ""
-	} else if job.Status == "failed" {
-		info.Warning = "Proxy preparation failed: " + job.LastError
-	} else {
-		info.Warning = "Editing proxy is " + job.Status + "."
+	} else if checked && info.ProxyStatus == "finished" {
+		info.ProxyStatus = ""
+		info.DurationMS = 0
+		info.Warning = "The editing proxy is missing; prepare this recording again."
 	}
 	return info
 }

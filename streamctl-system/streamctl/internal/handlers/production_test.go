@@ -469,7 +469,7 @@ func TestLogicalMediaInfoRequiresEditingProxy(t *testing.T) {
 func TestLogicalMediaInfoUsesFinishedEditingProxy(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'camera0000.mp4\\ncamera0001.mp4\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies/raw/mix*) printf 'camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -494,6 +494,79 @@ func TestLogicalMediaInfoUsesFinishedEditingProxy(t *testing.T) {
 	}
 	if info.ProxyPath != proxy || info.ProxyStatus != "finished" || info.DurationMS != 930123 || info.Warning != "" {
 		t.Fatalf("info=%+v", info)
+	}
+}
+
+func TestLogicalMediaInfoDiscoversEditingProxyWithoutDatabase(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies/raw/mix*) printf 'camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	info, err := h.logicalMediaInfo(context.Background(), "toronto/recordings/raw/mix/camera0000.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ProxyPath != "toronto/recordings/workspace/proxies/raw/mix/camera.mp4" || info.ProxyStatus != "finished" || info.DurationMS != 0 || info.Warning != "" {
+		t.Fatalf("info=%+v", info)
+	}
+}
+
+func TestMediaBrowserDiscoversPreparedSourceWithoutDatabase(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies/raw/mix*) printf 'camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	_, files, err := h.listMediaSpacesPrefix(context.Background(), "toronto/recordings/raw/mix/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].SourceType != "chunkedVideo" || files[0].ProxyStatus != "finished" {
+		t.Fatalf("files=%+v", files)
+	}
+}
+
+func TestProductionProxyArtifactCountUsesStoredFiles(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/main.mp4\\nraw/mix/talks.mp4\\nnotes.json\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "btcpp:btcpp"}
+	count, err := h.productionProxyArtifactCount(context.Background(), "toronto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("ready proxy count=%d want 2", count)
+	}
+}
+
+func TestProductionProxyPrepareSkipsExistingArtifactWithoutDatabaseRecord(t *testing.T) {
+	binDir := t.TempDir()
+	rclone := filepath.Join(binDir, "rclone")
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies*) printf 'raw/mix/camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	database := productionHandlerTestDB(t)
+	form := url.Values{"conference": {"toronto"}, "target": {"toronto/recordings/raw/mix/"}}
+	request := httptest.NewRequest(http.MethodPost, "/production/media/prepare", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	h := &Handler{DB: database, Remote: "btcpp:btcpp"}
+	h.productionProxyPrepare(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"queued":0`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := database.ProductionProxyJobBySource("toronto/recordings/raw/mix/camera0000.mp4"); err == nil {
+		t.Fatal("existing proxy was unnecessarily added to the preparation queue")
 	}
 }
 

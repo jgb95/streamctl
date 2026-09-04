@@ -99,6 +99,33 @@ func (db *DB) DeleteProductionTemplate(id int64, conference string) error {
 	return nil
 }
 
+func (db *DB) DeleteProductionTemplates(conference string, ids []int64) (int, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	deleted := 0
+	for _, id := range ids {
+		result, err := tx.Exec(`DELETE FROM production_templates WHERE id = ? AND conference = ?`, id, strings.TrimSpace(conference))
+		if err != nil {
+			return 0, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if changed != 1 {
+			return 0, fmt.Errorf("template %d not found", id)
+		}
+		deleted++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
 type productionTemplateScanner interface {
 	Scan(...any) error
 }

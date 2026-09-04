@@ -30,15 +30,26 @@ type productionTemplateListItem struct {
 type productionTemplatesPage struct {
 	Nav       productionNavView
 	Templates []productionTemplateListItem
+	Deleted   int
 	Error     string
 }
 
 type productionTemplateEditPage struct {
-	Nav          productionNavView
-	Template     db.ProductionTemplate
-	TemplateJSON template.JS
-	Saved        bool
-	Error        string
+	Nav             productionNavView
+	ItemID          int64
+	Conference      string
+	Name            string
+	DefinitionJSON  template.JS
+	Kind            string
+	BackURL         string
+	SaveAction      string
+	DuplicateAction string
+	DeleteAction    string
+	AllowDynamic    bool
+	CanDelete       bool
+	Saved           bool
+	SelectName      bool
+	Error           string
 }
 
 type productionTemplateDefinition struct {
@@ -105,7 +116,7 @@ var productionTemplateTimecode = regexp.MustCompile(`^(\d{2,}):(\d{2}):(\d{2})(?
 func (h *Handler) productionTemplates(w http.ResponseWriter, r *http.Request) {
 	conference := selectedProductionConference(r)
 	rememberProductionConference(w, r, conference)
-	page := productionTemplatesPage{}
+	page := productionTemplatesPage{Deleted: queryInt(r, "deleted")}
 	page.Nav.Active = "templates"
 	page.Nav.Action = "/production/templates"
 	page.Nav.Conference = conference
@@ -154,30 +165,40 @@ func (h *Handler) productionTemplateEdit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	conferences, conferenceError := h.productionConferences(r.Context())
-	page := productionTemplateEditPage{Template: item, Saved: r.URL.Query().Get("saved") == "1", Error: conferenceError}
+	page := productionTemplateEditPage{
+		ItemID: item.ID, Conference: item.Conference, Name: item.Name, Kind: "template",
+		BackURL:    "/production/templates?conference=" + url.QueryEscape(conference),
+		SaveAction: "/production/templates/save", DuplicateAction: "/production/templates/duplicate",
+		DeleteAction: "/production/templates/delete", AllowDynamic: true,
+		CanDelete: true,
+		Saved:     r.URL.Query().Get("saved") == "1", SelectName: r.URL.Query().Get("created") == "1", Error: conferenceError,
+	}
 	page.Nav = productionNavView{Active: "templates", Action: "/production/templates", Conference: conference, Conferences: conferences}
 	encoded, err := json.Marshal(json.RawMessage(item.JSON))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	page.TemplateJSON = template.JS(encoded)
+	page.DefinitionJSON = template.JS(encoded)
 	h.render(w, r, "production_template_edit.html", page)
 }
 
 func (h *Handler) productionTemplateCreate(w http.ResponseWriter, r *http.Request) {
 	conference := strings.TrimSpace(r.FormValue("conference"))
 	name := strings.TrimSpace(r.FormValue("name"))
-	if !validProductionConference(conference) || name == "" {
-		http.Error(w, "conference and template name are required", http.StatusBadRequest)
+	if !validProductionConference(conference) {
+		http.Error(w, "conference is required", http.StatusBadRequest)
 		return
+	}
+	if name == "" {
+		name = "Untitled template"
 	}
 	id, err := h.DB.CreateProductionTemplate(conference, name, defaultProductionTemplateJSON)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, productionTemplateURL(conference, id), http.StatusSeeOther)
+	http.Redirect(w, r, productionTemplateURL(conference, id)+"&created=1", http.StatusSeeOther)
 }
 
 func (h *Handler) productionTemplateSave(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +209,11 @@ func (h *Handler) productionTemplateSave(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "template ID, conference, and name are required", http.StatusBadRequest)
 		return
 	}
-	definition, err := validateProductionTemplate([]byte(r.FormValue("template")))
+	rawDefinition := r.FormValue("definition")
+	if rawDefinition == "" {
+		rawDefinition = r.FormValue("template")
+	}
+	definition, err := validateProductionTemplate([]byte(rawDefinition))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -244,6 +269,21 @@ func (h *Handler) productionTemplateDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	http.Redirect(w, r, "/production/templates?conference="+url.QueryEscape(conference), http.StatusSeeOther)
+}
+
+func (h *Handler) productionTemplatesDelete(w http.ResponseWriter, r *http.Request) {
+	conference := strings.TrimSpace(r.FormValue("conference"))
+	ids, err := selectedProductionIDs(r)
+	if !validProductionConference(conference) || err != nil {
+		http.Error(w, "conference and selected templates are required", http.StatusBadRequest)
+		return
+	}
+	deleted, err := h.DB.DeleteProductionTemplates(conference, ids)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/production/templates?conference=%s&deleted=%d", url.QueryEscape(conference), deleted), http.StatusSeeOther)
 }
 
 func productionTemplateURL(conference string, id int64) string {

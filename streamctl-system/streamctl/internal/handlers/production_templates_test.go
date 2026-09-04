@@ -85,7 +85,7 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"Templates", "Standard talk", "1 segment", "/production/templates/edit?conference=toronto", ">Talks</a>"} {
+	for _, want := range []string{"Templates", "+ New template", "production-quick-create", "Standard talk", "1 segment", "/production/templates/edit?conference=toronto", ">Talks</a>", "Select all", "selection-actions", ">Delete</button>", "/production/templates/delete-selected"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("template list omitted %q: %s", want, response.Body.String())
 		}
@@ -107,6 +107,30 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 	}
 	if strings.Index(response.Body.String(), "template-actions") > strings.Index(response.Body.String(), "template-editor\"") {
 		t.Fatalf("template actions are not in the sticky editor header: %s", response.Body.String())
+	}
+}
+
+func TestProductionTemplateCreateUsesEditableDefaultName(t *testing.T) {
+	database := productionHandlerTestDB(t)
+	h := &Handler{DB: database}
+	form := url.Values{"conference": {"toronto"}}
+	request := httptest.NewRequest(http.MethodPost, "/production/templates/create", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	h.productionTemplateCreate(response, request)
+	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "created=1") {
+		t.Fatalf("status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	items, err := database.ListProductionTemplates("toronto")
+	if err != nil || len(items) != 1 || items[0].Name != "Untitled template" {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	h.funcs = template.FuncMap{}
+	h.BTCPP = productionCandidatesStub{}
+	response = httptest.NewRecorder()
+	h.productionTemplateEdit(response, httptest.NewRequest(http.MethodGet, productionTemplateURL("toronto", items[0].ID)+"&created=1", nil))
+	if !strings.Contains(response.Body.String(), "newItemName.select()") {
+		t.Fatalf("new template name was not selected: %s", response.Body.String())
 	}
 }
 

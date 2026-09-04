@@ -39,6 +39,7 @@ type Candidate struct {
 	StartsAt        *string    `json:"starts_at"`
 	EndsAt          *string    `json:"ends_at"`
 	Venue           string     `json:"venue"`
+	SocialCard      string     `json:"social_card"`
 	Speakers        []Speaker  `json:"speakers"`
 	RecordingPolicy string     `json:"recording_policy"`
 	Eligible        bool       `json:"eligible"`

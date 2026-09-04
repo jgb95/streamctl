@@ -41,10 +41,15 @@ func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	existing, inventoryErr := h.productionProxyArtifactInventory(r.Context(), conference)
+	if inventoryErr != nil {
+		http.Error(w, inventoryErr.Error(), http.StatusBadGateway)
+		return
+	}
 	queued := 0
 	for _, source := range sources {
 		proxy := productionProxyObjectKey(conference, source)
-		if proxy == "" {
+		if proxy == "" || existing[proxy] {
 			continue
 		}
 		_, inserted, err := h.DB.EnqueueProductionProxyJob(source.Path, proxy)
@@ -56,7 +61,9 @@ func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request)
 			queued++
 		}
 	}
-	go h.dispatchProductionProxyQueue(context.Background())
+	if queued > 0 {
+		go h.dispatchProductionProxyQueue(context.Background())
+	}
 	message := "No new editing proxy jobs were needed."
 	if queued == 1 {
 		message = "Queued 1 new editing proxy job."
@@ -158,6 +165,89 @@ func productionProxyObjectKey(conference string, source mediaFile) string {
 		return ""
 	}
 	return recordingsPrefix + productionProxyDirectory + "/" + directory + stem + ".mp4"
+}
+
+func productionConferenceFromRecording(objectKey string) string {
+	conference, _, ok := strings.Cut(strings.Trim(objectKey, "/"), "/recordings/")
+	if !ok || !validProductionConference(conference) {
+		return ""
+	}
+	return conference
+}
+
+func (h *Handler) productionProxyArtifactInventory(ctx context.Context, conference string) (map[string]bool, error) {
+	proxies := make(map[string]bool)
+	if strings.TrimSpace(h.Remote) == "" || !validProductionConference(conference) {
+		return proxies, nil
+	}
+	prefix := conference + "/recordings/" + productionProxyDirectory + "/"
+	lines, err := h.rcloneLsf(ctx, prefix, "--recursive", "--files-only")
+	if err != nil {
+		return nil, fmt.Errorf("inspect prepared media: %w", err)
+	}
+	for _, line := range lines {
+		relative := strings.Trim(strings.TrimSpace(line), "/")
+		if relative != "" && isVideoFile(relative) {
+			proxies[prefix+relative] = true
+		}
+	}
+	return proxies, nil
+}
+
+func (h *Handler) productionProxyArtifactCount(ctx context.Context, conference string) (int, error) {
+	proxies, err := h.productionProxyArtifactInventory(ctx, conference)
+	if err != nil {
+		return 0, err
+	}
+	return len(proxies), nil
+}
+
+func (h *Handler) productionProxyArtifactsForSources(ctx context.Context, sources []mediaFile) (map[string]bool, error) {
+	wanted := make(map[string]bool)
+	directories := make(map[string]bool)
+	for _, source := range sources {
+		conference := productionConferenceFromRecording(source.Path)
+		proxy := productionProxyObjectKey(conference, source)
+		if proxy == "" {
+			continue
+		}
+		wanted[proxy] = true
+		directories[path.Dir(proxy)+"/"] = true
+	}
+	found := make(map[string]bool)
+	if strings.TrimSpace(h.Remote) == "" {
+		return found, nil
+	}
+	for directory := range directories {
+		lines, err := h.rcloneLsf(ctx, directory, "--files-only")
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range lines {
+			objectKey := directory + strings.Trim(strings.TrimSpace(line), "/")
+			if wanted[objectKey] {
+				found[objectKey] = true
+			}
+		}
+	}
+	return found, nil
+}
+
+func (h *Handler) productionProxyArtifactPresent(ctx context.Context, proxy string) (present, checked bool) {
+	if proxy == "" || strings.TrimSpace(h.Remote) == "" {
+		return false, false
+	}
+	files, err := h.rcloneLsf(ctx, path.Dir(proxy)+"/", "--files-only")
+	if err != nil {
+		return false, false
+	}
+	name := path.Base(proxy)
+	for _, file := range files {
+		if strings.Trim(strings.TrimSpace(file), "/") == name {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 func (h *Handler) productionProxyDispatcher() {

@@ -132,6 +132,7 @@ CREATE INDEX IF NOT EXISTS oauth_login_states_expires_at_idx ON oauth_login_stat
 
 CREATE TABLE IF NOT EXISTS render_job_queue (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	production_render_id INTEGER,
 	name TEXT NOT NULL,
 	manifest_json TEXT NOT NULL,
 	unit_name TEXT NOT NULL DEFAULT '',
@@ -168,6 +169,22 @@ CREATE TABLE IF NOT EXISTS production_templates (
 );
 
 CREATE INDEX IF NOT EXISTS production_templates_conference_idx ON production_templates (conference, updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS production_renders (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	conference TEXT NOT NULL,
+	name TEXT NOT NULL,
+	manifest_json TEXT NOT NULL,
+	template_id INTEGER,
+	talk_id TEXT NOT NULL DEFAULT '',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	archived_at DATETIME,
+	FOREIGN KEY (template_id) REFERENCES production_templates(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS production_renders_conference_idx ON production_renders (conference, updated_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS production_renders_generated_idx ON production_renders (conference, template_id, talk_id) WHERE template_id IS NOT NULL AND talk_id <> '';
 
 CREATE TABLE IF NOT EXISTS production_proxy_jobs (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,10 +225,44 @@ func (db *DB) Migrate() error {
 	if err := db.migrateGPUQueueColumns(); err != nil {
 		return err
 	}
+	if err := db.migrateRenderQueueColumns(); err != nil {
+		return err
+	}
+	if err := db.migrateProductionRenderColumns(); err != nil {
+		return err
+	}
 	if err := db.migrateProductionProxyColumns(); err != nil {
 		return err
 	}
 	return db.seedDefaultNostrRelays()
+}
+
+func (db *DB) migrateProductionRenderColumns() error {
+	hasColumn, err := db.hasColumn("production_renders", "archived_at")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := db.Exec(`ALTER TABLE production_renders ADD COLUMN archived_at DATETIME`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS production_renders_active_idx ON production_renders (conference, archived_at, updated_at DESC, id DESC)`)
+	return err
+}
+
+func (db *DB) migrateRenderQueueColumns() error {
+	hasColumn, err := db.hasColumn("render_job_queue", "production_render_id")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := db.Exec(`ALTER TABLE render_job_queue ADD COLUMN production_render_id INTEGER`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS render_job_queue_production_render_idx ON render_job_queue (production_render_id, id DESC)`)
+	return err
 }
 
 func (db *DB) migrateProductionProxyColumns() error {
@@ -460,17 +511,18 @@ type GPUQueueMetrics struct {
 // jobs share the GPU worker with transcode jobs, but deliberately use their own
 // table and lifecycle so the existing transcode queue remains unchanged.
 type RenderJobQueueItem struct {
-	ID            int64
-	Name          string
-	ManifestJSON  string
-	UnitName      string
-	Status        string
-	AttemptCount  int
-	LastAttemptAt *time.Time
-	LastError     string
-	CreatedAt     time.Time
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
+	ID                 int64
+	ProductionRenderID sql.NullInt64
+	Name               string
+	ManifestJSON       string
+	UnitName           string
+	Status             string
+	AttemptCount       int
+	LastAttemptAt      *time.Time
+	LastError          string
+	CreatedAt          time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
 }
 
 // ---------- Endpoint queries ----------
@@ -1130,7 +1182,7 @@ func (db *DB) ResolveGPUQueueFailure(rawPath, detail string) error {
 
 // ---------- conf-render queue queries ----------
 
-const renderJobColumns = `id, name, manifest_json, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at`
+const renderJobColumns = `id, production_render_id, name, manifest_json, unit_name, status, attempt_count, last_attempt_at, last_error, created_at, started_at, finished_at`
 
 func (db *DB) EnqueueRenderJob(name, manifestJSON string) (*RenderJobQueueItem, error) {
 	result, err := db.Exec(`INSERT INTO render_job_queue (name, manifest_json) VALUES (?, ?)`, name, manifestJSON)
@@ -1142,6 +1194,34 @@ func (db *DB) EnqueueRenderJob(name, manifestJSON string) (*RenderJobQueueItem, 
 		return nil, err
 	}
 	return db.GetRenderQueueItem(id)
+}
+
+var ErrRenderAlreadyActive = fmt.Errorf("render already has an active job")
+
+func (db *DB) EnqueueProductionRender(id int64, name, manifestJSON string) (*RenderJobQueueItem, error) {
+	result, err := db.Exec(`
+		INSERT INTO render_job_queue (production_render_id, name, manifest_json)
+		SELECT ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM render_job_queue
+			WHERE production_render_id = ? AND status IN ('queued', 'running')
+		)
+	`, id, name, manifestJSON, id)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed == 0 {
+		return nil, ErrRenderAlreadyActive
+	}
+	queueID, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return db.GetRenderQueueItem(queueID)
 }
 
 func (db *DB) GetRenderQueueItem(id int64) (*RenderJobQueueItem, error) {
@@ -1175,13 +1255,14 @@ func (db *DB) ListVisibleRenderQueueItems(limit int) ([]RenderJobQueueItem, erro
 	}
 	return db.listRenderJobs(`
 		SELECT `+renderJobColumns+` FROM render_job_queue
-		WHERE status IN ('queued', 'running', 'failed', 'cancelled')
+		WHERE status IN ('queued', 'running', 'failed', 'cancelled', 'finished')
 		ORDER BY
 			CASE status
 				WHEN 'running' THEN 0
 				WHEN 'queued' THEN 1
 				WHEN 'failed' THEN 2
 				WHEN 'cancelled' THEN 3
+				WHEN 'finished' THEN 4
 			END,
 			COALESCE(started_at, finished_at, created_at) DESC,
 			id DESC
@@ -1269,7 +1350,7 @@ type rowScanner interface {
 func scanRenderJob(row rowScanner) (*RenderJobQueueItem, error) {
 	var item RenderJobQueueItem
 	var lastAttemptAt, startedAt, finishedAt sql.NullTime
-	if err := row.Scan(&item.ID, &item.Name, &item.ManifestJSON, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.ProductionRenderID, &item.Name, &item.ManifestJSON, &item.UnitName, &item.Status, &item.AttemptCount, &lastAttemptAt, &item.LastError, &item.CreatedAt, &startedAt, &finishedAt); err != nil {
 		return nil, err
 	}
 	item.LastAttemptAt = nullTimePtr(lastAttemptAt)
