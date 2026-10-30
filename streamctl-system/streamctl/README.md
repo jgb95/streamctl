@@ -183,9 +183,16 @@ The DB file lives at `<data-dir>/streamctl.db` (default `/var/lib/streamctl/stre
 ## What's intentionally not here
 
 - **No file uploads through the UI**: scp into the video directory directly. Browsers handle multi-GB uploads poorly; ssh handles them well.
-- **No transcoding**: the stream uses `ffmpeg -c copy`. Whatever is in the file is what goes to the platforms.
-- **No multi-user auth**: single shared secret. If you need user accounts, this is the wrong tool.
-- **No queue or worker**: systemd is the queue. The web app generates unit files; systemd does the scheduling.
+- **No transcoding during scheduled playback**: streams use `ffmpeg -c copy`.
+  Production normalization and `conf-render` jobs run separately on the GPU
+  worker; prepare compatible files before scheduling playback.
+- **No local account management**: interactive access uses Bitcoin++ OAuth with
+  a current `global-admin` role. The optional shared secret is break-glass
+  access, not a local multi-user account system.
+- **No application scheduler for playback**: systemd timers schedule streams.
+  Production transcodes and render submissions have durable SQLite queues and
+  share a GPU dispatcher; systemd is not their queue. See the
+  [deployment and worker lifecycle documentation](../README.md).
 
 ## Extending
 
